@@ -38,7 +38,13 @@ Formatting requirements:
 - Keep mathematical delimiters correct. If punctuation or brackets are part of the math, keep them inside the delimiters.
 - This is a professional educational environment, so mathematical notation should be clear and publication-quality.
 - Avoid dumping dense plain paragraphs when a structured answer would be easier to learn from.
-- When the user asks for a general explanation, make the answer visually scannable with headings and short grouped bullets similar to a well-formatted study guide.`;
+- When the user asks for a general explanation, make the answer visually scannable with headings and short grouped bullets similar to a well-formatted study guide.
+
+Attachment handling:
+- If PDFs, images, audio, or documents are included in the request, they have been attached for you through the model API. Read and use the attached content directly.
+- Do not say you cannot view, open, access, or interpret attached files when file parts are present in the request.
+- If an attached file is unreadable, corrupted, blank, too large, or contains scanned text that cannot be extracted, say exactly that limitation and explain what you could read.
+- When answering about a PDF or image, base the answer on the attached file content, not only on the filename or the user's description.`;
 
 const tokenSecret = process.env.AUTH_TOKEN_SECRET || "local-development-change-me";
 
@@ -248,7 +254,7 @@ function buildConversationText(message: string, conversationHistory: any[] = [],
     .join("\n\n");
 
   const fileText = files.length > 0
-    ? `\n\nAttached files:\n${files.map((file: any, index: number) => {
+    ? `\n\nAttached files are included in this request and should be read directly:\n${files.map((file: any, index: number) => {
         if (file.type?.startsWith("image/")) return `${index + 1}. Image: ${file.name}`;
         if (file.type?.startsWith("audio/")) return `${index + 1}. Audio: ${file.name}`;
         if (isPdfFile(file)) return `${index + 1}. PDF: ${file.name}`;

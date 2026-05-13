@@ -247,6 +247,69 @@ async function deleteOpenAIInputFile(openaiApiKey: string, fileId: string) {
   }
 }
 
+async function uploadGoogleInputFile(googleApiKey: string, file: any, mimeType: string) {
+  const base64Data = getDataUrlPayload(file.content || "");
+  const bytes = Buffer.from(base64Data, "base64");
+  const startResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${googleApiKey}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(bytes.length),
+      "X-Goog-Upload-Header-Content-Type": mimeType,
+    },
+    body: JSON.stringify({
+      file: {
+        display_name: file.name || "attached-file",
+      },
+    }),
+  });
+
+  if (!startResponse.ok) {
+    const errorData = await startResponse.json().catch(() => ({}));
+    throw new Error(`Google AI file upload start error: ${errorData.error?.message || "Unknown error"}`);
+  }
+
+  const uploadUrl = startResponse.headers.get("x-goog-upload-url");
+  if (!uploadUrl) {
+    throw new Error("Google AI file upload did not return an upload URL");
+  }
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Length": String(bytes.length),
+      "X-Goog-Upload-Offset": "0",
+      "X-Goog-Upload-Command": "upload, finalize",
+    },
+    body: new Uint8Array(bytes),
+  });
+
+  if (!uploadResponse.ok) {
+    const errorData = await uploadResponse.json().catch(() => ({}));
+    throw new Error(`Google AI file upload error: ${errorData.error?.message || "Unknown error"}`);
+  }
+
+  const data = await uploadResponse.json();
+  if (!data?.file?.uri) {
+    throw new Error("Google AI file upload did not return a file URI");
+  }
+
+  return data.file as { name?: string; uri: string; mimeType?: string };
+}
+
+async function deleteGoogleInputFile(googleApiKey: string, fileName?: string) {
+  if (!fileName) return;
+  try {
+    await fetch(`https://generativelanguage.googleapis.com/v1beta/${fileName}?key=${googleApiKey}`, {
+      method: "DELETE",
+    });
+  } catch (error) {
+    console.warn(`Failed to delete temporary Google AI file ${fileName}:`, error);
+  }
+}
+
 function buildConversationText(message: string, conversationHistory: any[] = [], files: any[] = []) {
   const historyText = conversationHistory
     .map((msg: any) => `${msg.role === "assistant" ? "Assistant" : "User"}: ${flattenMessageContent(msg.content)}`)
@@ -393,58 +456,67 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
     throw new Error("Google AI API key not configured");
   }
 
-  const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}`;
-  const parts: any[] = [{ text: promptText }];
+  const uploadedFiles: Array<{ name?: string; uri: string; mimeType?: string }> = [];
+  const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}\n\nFor Google AI, attached PDFs are provided as Gemini file references. Read those file references directly before answering.`;
+  const parts: any[] = [];
 
-  for (const file of files) {
-    const audioMimeType = getAudioMimeType(file);
+  try {
+    for (const file of files) {
+      const audioMimeType = getAudioMimeType(file);
 
-    if (audioMimeType) {
-      parts.push({
-        inline_data: {
-          mime_type: audioMimeType,
-          data: getDataUrlPayload(file.content || ""),
-        },
-      });
-    } else if (isPdfFile(file)) {
-      parts.push({
-        inline_data: {
-          mime_type: "application/pdf",
-          data: getDataUrlPayload(file.content || ""),
-        },
-      });
-    } else {
-      const imageMimeType = getImageMimeType(file);
-      if (imageMimeType) {
+      if (audioMimeType) {
         parts.push({
           inline_data: {
-            mime_type: imageMimeType,
+            mime_type: audioMimeType,
             data: getDataUrlPayload(file.content || ""),
           },
         });
+      } else if (isPdfFile(file)) {
+        const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, "application/pdf");
+        uploadedFiles.push(uploadedFile);
+        parts.push({
+          file_data: {
+            mime_type: uploadedFile.mimeType || "application/pdf",
+            file_uri: uploadedFile.uri,
+          },
+        });
+      } else {
+        const imageMimeType = getImageMimeType(file);
+        if (imageMimeType) {
+          parts.push({
+            inline_data: {
+              mime_type: imageMimeType,
+              data: getDataUrlPayload(file.content || ""),
+            },
+          });
+        }
       }
     }
+
+    parts.push({ text: promptText });
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${googleApiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts }],
+          generationConfig: { temperature: 0.7 },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Google AI API error: ${errorData.error?.message || "Unknown error"}`);
+    }
+
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join("\n") || "No response generated.";
+  } finally {
+    await Promise.all(uploadedFiles.map((file) => deleteGoogleInputFile(googleApiKey, file.name)));
   }
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${googleApiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts }],
-        generationConfig: { temperature: 0.7 },
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(`Google AI API error: ${errorData.error?.message || "Unknown error"}`);
-  }
-
-  const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join("\n") || "No response generated.";
 }
 
 async function runClaudeChat(message: string, conversationHistory: any[] = [], files: any[] = []) {

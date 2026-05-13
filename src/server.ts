@@ -158,6 +158,18 @@ function isPdfFile(file: any): boolean {
   return fileType === "application/pdf" || fileName.endsWith(".pdf");
 }
 
+function getImageMimeType(file: any): string | null {
+  const fileType = String(file?.type || "").toLowerCase();
+  const fileName = String(file?.name || "").toLowerCase();
+
+  if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(fileType)) return fileType;
+  if (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) return "image/jpeg";
+  if (fileName.endsWith(".png")) return "image/png";
+  if (fileName.endsWith(".gif")) return "image/gif";
+  if (fileName.endsWith(".webp")) return "image/webp";
+  return null;
+}
+
 function hasOpenAIAudioInput(files: any[] = []) {
   return files.some((file) => Boolean(getAudioInputFormat(file)));
 }
@@ -264,7 +276,7 @@ async function runOpenAIChat(message: string, conversationHistory: any[] = [], f
         contentParts.push({
           type: "input_file",
           filename: file.name || "document.pdf",
-          file_data: file.content || "",
+          file_data: getDataUrlPayload(file.content || ""),
         });
       } else if (file.type?.startsWith("image/")) {
         contentParts.push({
@@ -344,6 +356,16 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
           data: getDataUrlPayload(file.content || ""),
         },
       });
+    } else {
+      const imageMimeType = getImageMimeType(file);
+      if (imageMimeType) {
+        parts.push({
+          inline_data: {
+            mime_type: imageMimeType,
+            data: getDataUrlPayload(file.content || ""),
+          },
+        });
+      }
     }
   }
 
@@ -381,12 +403,23 @@ async function runClaudeChat(message: string, conversationHistory: any[] = [], f
   const userContent: any[] = [];
 
   for (const file of files) {
+    const imageMimeType = getImageMimeType(file);
+
     if (isPdfFile(file)) {
       userContent.push({
         type: "document",
         source: {
           type: "base64",
           media_type: "application/pdf",
+          data: getDataUrlPayload(file.content || ""),
+        },
+      });
+    } else if (imageMimeType) {
+      userContent.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: imageMimeType,
           data: getDataUrlPayload(file.content || ""),
         },
       });

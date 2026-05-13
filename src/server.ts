@@ -4,6 +4,7 @@ import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypt
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
 
 type ChatProvider = "openai" | "google" | "claude";
@@ -186,6 +187,19 @@ function hasAudioInput(files: any[] = []) {
 
 function hasPdfInput(files: any[] = []) {
   return files.some(isPdfFile);
+}
+
+async function extractPdfText(file: any): Promise<string> {
+  const base64Data = getDataUrlPayload(file.content || "");
+  if (!base64Data) return "";
+
+  const parser = new PDFParse({ data: Buffer.from(base64Data, "base64") });
+  try {
+    const data = await parser.getText();
+    return String(data.text || "").trim();
+  } finally {
+    await parser.destroy();
+  }
 }
 
 function getOpenAIResponseText(data: any): string {
@@ -457,7 +471,7 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
   }
 
   const uploadedFiles: Array<{ name?: string; uri: string; mimeType?: string }> = [];
-  const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}\n\nFor Google AI, attached PDFs are provided as Gemini file references. Read those file references directly before answering.`;
+  const extractedPdfSections: string[] = [];
   const parts: any[] = [];
 
   try {
@@ -472,14 +486,25 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
           },
         });
       } else if (isPdfFile(file)) {
-        const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, "application/pdf");
-        uploadedFiles.push(uploadedFile);
-        parts.push({
-          file_data: {
-            mime_type: uploadedFile.mimeType || "application/pdf",
-            file_uri: uploadedFile.uri,
-          },
-        });
+        let extractedText = "";
+        try {
+          extractedText = await extractPdfText(file);
+        } catch (error) {
+          console.warn(`Failed to extract PDF text from ${file.name || "attached PDF"}:`, error);
+        }
+
+        if (extractedText) {
+          extractedPdfSections.push(`PDF: ${file.name || "attached PDF"}\n${extractedText}`);
+        } else {
+          const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, "application/pdf");
+          uploadedFiles.push(uploadedFile);
+          parts.push({
+            file_data: {
+              mime_type: uploadedFile.mimeType || "application/pdf",
+              file_uri: uploadedFile.uri,
+            },
+          });
+        }
       } else {
         const imageMimeType = getImageMimeType(file);
         if (imageMimeType) {
@@ -493,6 +518,13 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       }
     }
 
+    const extractedPdfText = extractedPdfSections.length > 0
+      ? `\n\nExtracted PDF text for Google AI. Use this as the actual PDF content:\n\n${extractedPdfSections.join("\n\n---\n\n")}`
+      : "";
+    const fileReferenceInstruction = uploadedFiles.length > 0
+      ? "\n\nSome PDFs could not be text-extracted and are provided as Gemini file references. Read those file references directly before answering."
+      : "";
+    const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}${extractedPdfText}${fileReferenceInstruction}`;
     parts.push({ text: promptText });
 
     const response = await fetch(

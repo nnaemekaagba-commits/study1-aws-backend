@@ -196,6 +196,51 @@ function getOpenAIResponseText(data: any): string {
     .trim() || "No response generated.";
 }
 
+async function uploadOpenAIInputFile(openaiApiKey: string, file: any): Promise<string> {
+  const base64Data = getDataUrlPayload(file.content || "");
+  const bytes = Buffer.from(base64Data, "base64");
+  const formData = new FormData();
+
+  formData.append(
+    "file",
+    new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),
+    file.name || "document.pdf",
+  );
+  formData.append("purpose", "user_data");
+
+  const response = await fetch("https://api.openai.com/v1/files", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(`OpenAI file upload error: ${errorData.error?.message || "Unknown error"}`);
+  }
+
+  const data = await response.json();
+  if (!data?.id) {
+    throw new Error("OpenAI file upload did not return a file id");
+  }
+  return data.id;
+}
+
+async function deleteOpenAIInputFile(openaiApiKey: string, fileId: string) {
+  try {
+    await fetch(`https://api.openai.com/v1/files/${fileId}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+      },
+    });
+  } catch (error) {
+    console.warn(`Failed to delete temporary OpenAI file ${fileId}:`, error);
+  }
+}
+
 function buildConversationText(message: string, conversationHistory: any[] = [], files: any[] = []) {
   const historyText = conversationHistory
     .map((msg: any) => `${msg.role === "assistant" ? "Assistant" : "User"}: ${flattenMessageContent(msg.content)}`)
@@ -264,48 +309,54 @@ async function runOpenAIChat(message: string, conversationHistory: any[] = [], f
   }
 
   if (hasPdfInput(files)) {
+    const uploadedFileIds: string[] = [];
     const contentParts: any[] = [
       {
         type: "input_text",
-        text: buildConversationText(message, conversationHistory, files),
+        text: `${buildConversationText(message, conversationHistory, files)}\n\nThe attached PDF files have been uploaded as OpenAI input files. Read the PDF contents directly before answering.`,
       },
     ];
 
-    for (const file of files) {
-      if (isPdfFile(file)) {
-        contentParts.push({
-          type: "input_file",
-          filename: file.name || "document.pdf",
-          file_data: file.content || "",
-        });
-      } else if (file.type?.startsWith("image/")) {
-        contentParts.push({
-          type: "input_image",
-          image_url: file.content,
-        });
+    try {
+      for (const file of files) {
+        if (isPdfFile(file)) {
+          const fileId = await uploadOpenAIInputFile(openaiApiKey, file);
+          uploadedFileIds.push(fileId);
+          contentParts.push({
+            type: "input_file",
+            file_id: fileId,
+          });
+        } else if (file.type?.startsWith("image/")) {
+          contentParts.push({
+            type: "input_image",
+            image_url: file.content,
+          });
+        }
       }
+
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiApiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          instructions: SYSTEM_PROMPT,
+          input: [{ role: "user", content: contentParts }],
+          temperature: 0.7,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`);
+      }
+
+      return getOpenAIResponseText(await response.json());
+    } finally {
+      await Promise.all(uploadedFileIds.map((fileId) => deleteOpenAIInputFile(openaiApiKey, fileId)));
     }
-
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        instructions: SYSTEM_PROMPT,
-        input: [{ role: "user", content: contentParts }],
-        temperature: 0.7,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`OpenAI API error: ${errorData.error?.message || "Unknown error"}`);
-    }
-
-    return getOpenAIResponseText(await response.json());
   }
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

@@ -276,7 +276,7 @@ async function runOpenAIChat(message: string, conversationHistory: any[] = [], f
         contentParts.push({
           type: "input_file",
           filename: file.name || "document.pdf",
-          file_data: getDataUrlPayload(file.content || ""),
+          file_data: file.content || "",
         });
       } else if (file.type?.startsWith("image/")) {
         contentParts.push({

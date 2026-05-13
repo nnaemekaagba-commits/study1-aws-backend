@@ -551,6 +551,59 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
   }
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function isOpenAIAvailabilityError(error: unknown) {
+  const message = getErrorMessage(error).toLowerCase();
+  return message.includes("quota")
+    || message.includes("billing")
+    || message.includes("insufficient_quota")
+    || message.includes("rate limit")
+    || message.includes("429");
+}
+
+async function runProviderChat(provider: ChatProvider, message: string, conversationHistory: any[] = [], files: any[] = []) {
+  if (provider === "google") return runGoogleChat(message, conversationHistory, files);
+  if (provider === "claude") return runClaudeChat(message, conversationHistory, files);
+  return runOpenAIChat(message, conversationHistory, files);
+}
+
+async function runChatWithFallback(selectedProvider: ChatProvider, message: string, conversationHistory: any[] = [], files: any[] = []) {
+  try {
+    return {
+      response: await runProviderChat(selectedProvider, message, conversationHistory, files),
+      providerUsed: selectedProvider,
+    };
+  } catch (error) {
+    if (selectedProvider !== "openai" || !isOpenAIAvailabilityError(error)) {
+      throw error;
+    }
+
+    console.warn("OpenAI is unavailable; trying fallback providers:", getErrorMessage(error));
+    const fallbackErrors: string[] = [];
+
+    for (const fallbackProvider of ["google", "claude"] as ChatProvider[]) {
+      try {
+        const fallbackResponse = await runProviderChat(fallbackProvider, message, conversationHistory, files);
+        const providerName = fallbackProvider === "google" ? "Google AI" : "Claude";
+        return {
+          response: "OpenAI is currently unavailable because its API quota or billing limit was reached, so this response was generated with " + providerName + " instead.\n\n" + fallbackResponse,
+          providerUsed: fallbackProvider,
+          fallbackReason: getErrorMessage(error),
+        };
+      } catch (fallbackError) {
+        const fallbackMessage = getErrorMessage(fallbackError);
+        fallbackErrors.push(`${fallbackProvider}: ${fallbackMessage}`);
+        console.warn(`Fallback provider ${fallbackProvider} failed:`, fallbackMessage);
+      }
+    }
+
+    throw new Error(`OpenAI is unavailable and fallback providers also failed. ${fallbackErrors.join(" | ")}`);
+  }
+}
+
 async function runClaudeChat(message: string, conversationHistory: any[] = [], files: any[] = []) {
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
   if (!anthropicApiKey) {
@@ -753,13 +806,14 @@ app.post("/chat", async (c) => {
     }
 
     const selectedProvider = normalizeProvider(provider);
-    const response = selectedProvider === "google"
-      ? await runGoogleChat(message, conversationHistory, files)
-      : selectedProvider === "claude"
-        ? await runClaudeChat(message, conversationHistory, files)
-        : await runOpenAIChat(message, conversationHistory, files);
+    const { response, providerUsed, fallbackReason } = await runChatWithFallback(
+      selectedProvider,
+      message,
+      conversationHistory,
+      files,
+    );
 
-    return c.json({ response, provider: selectedProvider, providerUsed: selectedProvider });
+    return c.json({ response, provider: selectedProvider, providerUsed, fallbackReason });
   } catch (error) {
     console.error("Error in chat endpoint:", error);
     return c.json({ error: error instanceof Error ? error.message : "Failed to process chat request" }, 500);

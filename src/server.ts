@@ -547,16 +547,13 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       } else {
         const imageMimeType = getImageMimeType(file);
         if (imageMimeType) {
-          const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, imageMimeType);
-          const readyFile = await waitForGoogleInputFile(googleApiKey, uploadedFile);
-          uploadedFiles.push(readyFile);
           parts.push({
             text: `Attached image file: ${file.name || "image"}. Inspect this image directly before answering, including any visible text, labels, diagrams, equations, tables, or screenshots.`,
           });
           parts.push({
-            file_data: {
-              mime_type: readyFile.mimeType || imageMimeType,
-              file_uri: readyFile.uri,
+            inline_data: {
+              mime_type: imageMimeType,
+              data: getDataUrlPayload(file.content || ""),
             },
           });
         }
@@ -567,7 +564,7 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       ? `\n\nExtracted PDF text for Google AI. Use this as the actual PDF content:\n\n${extractedPdfSections.join("\n\n---\n\n")}`
       : "";
     const fileReferenceInstruction = uploadedFiles.length > 0
-      ? "\n\nPDF and image attachments are provided as Gemini file references. Read those files directly before answering; use extracted text only as a helper when available."
+      ? "\n\nPDF attachments are provided as Gemini file references. Read those files directly before answering; use extracted text only as a helper when available. Image attachments are provided inline; inspect their visual content directly."
       : "";
     const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}${extractedPdfText}${fileReferenceInstruction}`;
     parts.push({ text: promptText });

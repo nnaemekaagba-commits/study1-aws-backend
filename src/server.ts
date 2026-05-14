@@ -313,6 +313,38 @@ async function uploadGoogleInputFile(googleApiKey: string, file: any, mimeType: 
   return data.file as { name?: string; uri: string; mimeType?: string };
 }
 
+async function waitForGoogleInputFile(googleApiKey: string, file: { name?: string; uri: string; mimeType?: string }) {
+  if (!file.name) return file;
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${file.name}?key=${googleApiKey}`);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Google AI file readiness error: ${errorData.error?.message || "Unknown error"}`);
+    }
+
+    const data = await response.json();
+    const state = String(data?.file?.state || "ACTIVE").toUpperCase();
+
+    if (state === "ACTIVE") {
+      return {
+        name: data.file.name || file.name,
+        uri: data.file.uri || file.uri,
+        mimeType: data.file.mimeType || file.mimeType,
+      };
+    }
+
+    if (state === "FAILED") {
+      throw new Error(`Google AI could not process attached file ${file.name}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 750 + attempt * 250));
+  }
+
+  throw new Error(`Google AI file ${file.name} was still processing after waiting`);
+}
+
 async function deleteGoogleInputFile(googleApiKey: string, fileName?: string) {
   if (!fileName) return;
   try {
@@ -495,19 +527,26 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
 
         if (extractedText) {
           extractedPdfSections.push(`PDF: ${file.name || "attached PDF"}\n${extractedText}`);
-        } else {
-          const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, "application/pdf");
-          uploadedFiles.push(uploadedFile);
-          parts.push({
-            file_data: {
-              mime_type: uploadedFile.mimeType || "application/pdf",
-              file_uri: uploadedFile.uri,
-            },
-          });
         }
+
+        const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, "application/pdf");
+        const readyFile = await waitForGoogleInputFile(googleApiKey, uploadedFile);
+        uploadedFiles.push(readyFile);
+        parts.push({
+          text: `Attached PDF file: ${file.name || "document.pdf"}. Read this PDF directly, including page images/diagrams if text extraction is incomplete.`,
+        });
+        parts.push({
+          file_data: {
+            mime_type: readyFile.mimeType || "application/pdf",
+            file_uri: readyFile.uri,
+          },
+        });
       } else {
         const imageMimeType = getImageMimeType(file);
         if (imageMimeType) {
+          parts.push({
+            text: `Attached image file: ${file.name || "image"}. Inspect this image directly before answering.`,
+          });
           parts.push({
             inline_data: {
               mime_type: imageMimeType,
@@ -522,7 +561,7 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       ? `\n\nExtracted PDF text for Google AI. Use this as the actual PDF content:\n\n${extractedPdfSections.join("\n\n---\n\n")}`
       : "";
     const fileReferenceInstruction = uploadedFiles.length > 0
-      ? "\n\nSome PDFs could not be text-extracted and are provided as Gemini file references. Read those file references directly before answering."
+      ? "\n\nPDF attachments are provided as Gemini file references. Read those files directly before answering; use extracted text only as a helper when available."
       : "";
     const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}${extractedPdfText}${fileReferenceInstruction}`;
     parts.push({ text: promptText });

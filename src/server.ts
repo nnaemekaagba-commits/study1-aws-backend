@@ -325,13 +325,14 @@ async function waitForGoogleInputFile(googleApiKey: string, file: { name?: strin
     }
 
     const data = await response.json();
-    const state = String(data?.file?.state || "ACTIVE").toUpperCase();
+    const readyFile = data?.file || data;
+    const state = String(readyFile?.state || "ACTIVE").toUpperCase();
 
     if (state === "ACTIVE") {
       return {
-        name: data.file.name || file.name,
-        uri: data.file.uri || file.uri,
-        mimeType: data.file.mimeType || file.mimeType,
+        name: readyFile.name || file.name,
+        uri: readyFile.uri || file.uri,
+        mimeType: readyFile.mimeType || file.mimeType,
       };
     }
 

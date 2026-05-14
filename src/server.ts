@@ -169,11 +169,13 @@ function getImageMimeType(file: any): string | null {
   const fileType = String(file?.type || "").toLowerCase();
   const fileName = String(file?.name || "").toLowerCase();
 
-  if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(fileType)) return fileType;
+  if (["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif"].includes(fileType)) return fileType;
   if (fileName.endsWith(".jpg") || fileName.endsWith(".jpeg")) return "image/jpeg";
   if (fileName.endsWith(".png")) return "image/png";
   if (fileName.endsWith(".gif")) return "image/gif";
   if (fileName.endsWith(".webp")) return "image/webp";
+  if (fileName.endsWith(".heic")) return "image/heic";
+  if (fileName.endsWith(".heif")) return "image/heif";
   return null;
 }
 
@@ -545,13 +547,16 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       } else {
         const imageMimeType = getImageMimeType(file);
         if (imageMimeType) {
+          const uploadedFile = await uploadGoogleInputFile(googleApiKey, file, imageMimeType);
+          const readyFile = await waitForGoogleInputFile(googleApiKey, uploadedFile);
+          uploadedFiles.push(readyFile);
           parts.push({
-            text: `Attached image file: ${file.name || "image"}. Inspect this image directly before answering.`,
+            text: `Attached image file: ${file.name || "image"}. Inspect this image directly before answering, including any visible text, labels, diagrams, equations, tables, or screenshots.`,
           });
           parts.push({
-            inline_data: {
-              mime_type: imageMimeType,
-              data: getDataUrlPayload(file.content || ""),
+            file_data: {
+              mime_type: readyFile.mimeType || imageMimeType,
+              file_uri: readyFile.uri,
             },
           });
         }
@@ -562,7 +567,7 @@ async function runGoogleChat(message: string, conversationHistory: any[] = [], f
       ? `\n\nExtracted PDF text for Google AI. Use this as the actual PDF content:\n\n${extractedPdfSections.join("\n\n---\n\n")}`
       : "";
     const fileReferenceInstruction = uploadedFiles.length > 0
-      ? "\n\nPDF attachments are provided as Gemini file references. Read those files directly before answering; use extracted text only as a helper when available."
+      ? "\n\nPDF and image attachments are provided as Gemini file references. Read those files directly before answering; use extracted text only as a helper when available."
       : "";
     const promptText = `${SYSTEM_PROMPT}\n\n${buildConversationText(message, conversationHistory, files)}${extractedPdfText}${fileReferenceInstruction}`;
     parts.push({ text: promptText });

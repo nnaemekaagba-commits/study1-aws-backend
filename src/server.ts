@@ -882,10 +882,10 @@ app.post("/generate-image", async (c) => {
         Authorization: `Bearer ${openaiApiKey}`,
       },
       body: JSON.stringify({
-        model: "dall-e-3",
+        model: "gpt-image-1",
         prompt,
         size: "1024x1024",
-        quality: "standard",
+        quality: "medium",
         n: 1,
       }),
     });
@@ -896,9 +896,12 @@ app.post("/generate-image", async (c) => {
     }
 
     const data = await response.json();
+    const generatedImage = data.data?.[0];
+    const imageUrl = generatedImage?.url || (generatedImage?.b64_json ? `data:image/png;base64,${generatedImage.b64_json}` : undefined);
+
     return c.json({
-      imageUrl: data.data?.[0]?.url,
-      revisedPrompt: data.data?.[0]?.revised_prompt || prompt,
+      imageUrl,
+      revisedPrompt: generatedImage?.revised_prompt || prompt,
     });
   } catch (error) {
     console.error("Error generating image:", error);

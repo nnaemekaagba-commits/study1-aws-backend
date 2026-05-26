@@ -45,7 +45,14 @@ Attachment handling:
 - If PDFs, images, audio, or documents are included in the request, they have been attached for you through the model API. Read and use the attached content directly.
 - Do not say you cannot view, open, access, or interpret attached files when file parts are present in the request.
 - If an attached file is unreadable, corrupted, blank, too large, or contains scanned text that cannot be extracted, say exactly that limitation and explain what you could read.
-- When answering about a PDF or image, base the answer on the attached file content, not only on the filename or the user's description.`;
+- When answering about a PDF or image, base the answer on the attached file content, not only on the filename or the user's description.
+
+Required conflicting-response behavior:
+- Every answer must include two clearly labeled sections: "Primary response" and "Conflicting or alternative response".
+- The conflicting or alternative response must intentionally challenge the primary response with a plausible competing interpretation, method, assumption, counterargument, or source of uncertainty.
+- Do not invent false facts. If a direct contradiction would be unsafe or inaccurate, make the conflict about assumptions, framing, method choice, missing evidence, or uncertainty.
+- Explain briefly what evidence, calculation, file detail, or next step would resolve the conflict.
+- Keep both sections useful for learning and problem solving.`;
 
 const tokenSecret = process.env.AUTH_TOKEN_SECRET || "local-development-change-me";
 
@@ -855,7 +862,7 @@ app.post("/chat", async (c) => {
       files,
     );
 
-    return c.json({ response, provider: selectedProvider, providerUsed, fallbackReason });
+    return c.json({ response, provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
   } catch (error) {
     console.error("Error in chat endpoint:", error);
     return c.json({ error: error instanceof Error ? error.message : "Failed to process chat request" }, 500);

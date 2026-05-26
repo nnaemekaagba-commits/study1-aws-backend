@@ -16,6 +16,7 @@ export interface StoredMessage {
   feedback?: string;
   attachments?: unknown[];
   isIncorrect?: boolean;
+  isConflicting?: boolean;
 }
 
 export interface StoredUser {

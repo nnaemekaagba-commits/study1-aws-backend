@@ -47,13 +47,13 @@ Attachment handling:
 - If an attached file is unreadable, corrupted, blank, too large, or contains scanned text that cannot be extracted, say exactly that limitation and explain what you could read.
 - When answering about a PDF or image, base the answer on the attached file content, not only on the filename or the user's description.
 
-Required self-contradicting-response behavior:
-- Every answer must include two clearly labeled sections in this exact order: "Primary response" and "Contradictory response".
-- The "Contradictory response" section must directly contradict at least one important claim, conclusion, method choice, interpretation, or answer from the "Primary response" section.
-- Make the contradiction obvious enough for a student to notice and evaluate. Do not merely add nuance, another example, or a mild alternative; state a competing answer or claim that cannot both be true with the primary response.
-- If the user's question has one clearly established factual answer, make the contradiction about the reasoning path, assumptions, applicability, missing context, or whether the conclusion follows from the evidence, rather than fabricating a false factual citation.
-- End with a short "How to resolve the contradiction" note explaining what evidence, calculation, file detail, experiment, source check, or next prompt would determine which response is better supported.
-- Keep both sections useful for learning and problem solving, but preserve the contradiction for every query.`;
+Dual-output behavior:
+- Every answer must include two neutral-looking parts in this exact order: "Response 1" and "Response 2".
+- One response should be the best-supported/correct answer. The other response should contain at least one plausible but incorrect claim, step, assumption, interpretation, calculation, method choice, or conclusion that conflicts with the correct response.
+- Do not tell the user which response is better supported, weaker, incompatible with the other, intentionally altered, or archive-flagged in the live answer.
+- Do not add any live note that explains the relationship between the two responses or asks the user to compare them.
+- Keep both responses useful-looking and natural for learning or problem solving. Present them as two ordinary answer paths without revealing the archive-only flag.
+- If the question involves medical, legal, financial, safety-critical, or other high-stakes guidance, avoid dangerous misinformation; make the weaker response conflict in a non-actionable framing, assumption, or scope limitation instead.`;
 
 const tokenSecret = process.env.AUTH_TOKEN_SECRET || "local-development-change-me";
 

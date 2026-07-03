@@ -9,6 +9,21 @@ import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
 
 type ChatProvider = "openai" | "google" | "claude";
 
+type WebSearchResult = {
+  title: string;
+  url: string;
+  snippet?: string;
+  source?: string;
+};
+
+type WebSearchResponse = {
+  query: string;
+  provider: "tavily" | "brave" | "search-links";
+  configured: boolean;
+  results: WebSearchResult[];
+  note?: string;
+};
+
 const app = new Hono();
 
 app.use("*", logger());
@@ -128,6 +143,125 @@ function normalizeProvider(value: unknown): ChatProvider {
   if (normalized === "google" || normalized === "gemini") return "google";
   if (normalized === "claude" || normalized === "anthropic") return "claude";
   return "openai";
+}
+
+function cleanSearchText(value: unknown) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function buildFallbackSearchResults(query: string): WebSearchResult[] {
+  const encodedQuery = encodeURIComponent(query);
+  return [
+    {
+      title: `Search Google for "${query}"`,
+      url: `https://www.google.com/search?q=${encodedQuery}`,
+      snippet: "Open this search link to review external sources for the original query.",
+      source: "Google",
+    },
+    {
+      title: `Search Bing for "${query}"`,
+      url: `https://www.bing.com/search?q=${encodedQuery}`,
+      snippet: "Open this search link if you want another general web search result page.",
+      source: "Bing",
+    },
+    {
+      title: `Search DuckDuckGo for "${query}"`,
+      url: `https://duckduckgo.com/?q=${encodedQuery}`,
+      snippet: "Open this search link if you prefer a privacy-focused search page.",
+      source: "DuckDuckGo",
+    },
+  ];
+}
+
+async function runTavilySearch(query: string): Promise<WebSearchResponse | null> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) return null;
+
+  const response = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: apiKey,
+      query,
+      search_depth: "basic",
+      max_results: 5,
+      include_answer: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Tavily search failed: ${response.status} ${errorText.slice(0, 240)}`);
+  }
+
+  const data = (await response.json()) as {
+    results?: Array<{ title?: unknown; url?: unknown; content?: unknown; source?: unknown }>;
+  };
+
+  const results = (data.results || [])
+    .slice(0, 5)
+    .map((result) => ({
+      title: cleanSearchText(result.title) || cleanSearchText(result.url),
+      url: cleanSearchText(result.url),
+      snippet: cleanSearchText(result.content),
+      source: cleanSearchText(result.source),
+    }))
+    .filter((result) => result.url);
+
+  return { query, provider: "tavily", configured: true, results };
+}
+
+async function runBraveSearch(query: string): Promise<WebSearchResponse | null> {
+  const apiKey = process.env.BRAVE_SEARCH_API_KEY;
+  if (!apiKey) return null;
+
+  const url = new URL("https://api.search.brave.com/res/v1/web/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", "5");
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "X-Subscription-Token": apiKey,
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Brave search failed: ${response.status} ${errorText.slice(0, 240)}`);
+  }
+
+  const data = (await response.json()) as {
+    web?: { results?: Array<{ title?: unknown; url?: unknown; description?: unknown; profile?: { name?: unknown } }> };
+  };
+
+  const results = (data.web?.results || [])
+    .slice(0, 5)
+    .map((result) => ({
+      title: cleanSearchText(result.title) || cleanSearchText(result.url),
+      url: cleanSearchText(result.url),
+      snippet: cleanSearchText(result.description),
+      source: cleanSearchText(result.profile?.name),
+    }))
+    .filter((result) => result.url);
+
+  return { query, provider: "brave", configured: true, results };
+}
+
+async function runWebSearch(query: string): Promise<WebSearchResponse> {
+  const tavilyResult = await runTavilySearch(query);
+  if (tavilyResult) return tavilyResult;
+
+  const braveResult = await runBraveSearch(query);
+  if (braveResult) return braveResult;
+
+  return {
+    query,
+    provider: "search-links",
+    configured: false,
+    results: buildFallbackSearchResults(query),
+    note: "No live web search API key is configured yet. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY to return server-side search results.",
+  };
 }
 
 function flattenMessageContent(content: unknown): string {
@@ -871,6 +1005,23 @@ app.post("/chat", async (c) => {
   } catch (error) {
     console.error("Error in chat endpoint:", error);
     return c.json({ error: error instanceof Error ? error.message : "Failed to process chat request" }, 500);
+  }
+});
+
+app.post("/web-search", async (c) => {
+  try {
+    const { query } = await c.req.json<{ query?: string }>();
+    const cleanQuery = cleanSearchText(query).slice(0, 500);
+
+    if (!cleanQuery) {
+      return c.json({ error: "Search query is required" }, 400);
+    }
+
+    const search = await runWebSearch(cleanQuery);
+    return c.json(search);
+  } catch (error) {
+    console.error("Error in web search endpoint:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Failed to search web sources" }, 500);
   }
 });
 

@@ -659,6 +659,7 @@ async function runChatWithFallback(selectedProvider: ChatProvider, message: stri
 
 async function runClaudeChat(message: string, conversationHistory: any[] = [], files: any[] = []) {
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  const claudeModel = process.env.CLAUDE_MODEL || "claude-3-5-sonnet-20241022";
   if (!anthropicApiKey) {
     throw new Error("Claude API key not configured");
   }
@@ -714,7 +715,7 @@ async function runClaudeChat(message: string, conversationHistory: any[] = [], f
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: claudeModel,
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       messages,
@@ -723,7 +724,7 @@ async function runClaudeChat(message: string, conversationHistory: any[] = [], f
 
   if (!response.ok) {
     const errorData = await response.json();
-    throw new Error(`Claude API error: ${errorData.error?.message || errorData.error?.type || "Unknown error"}`);
+    throw new Error(`Claude API error (${claudeModel}): ${errorData.error?.message || errorData.error?.type || "Unknown error"}`);
   }
 
   const data = await response.json();

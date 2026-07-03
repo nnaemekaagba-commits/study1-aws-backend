@@ -659,7 +659,7 @@ async function runChatWithFallback(selectedProvider: ChatProvider, message: stri
 
 async function runClaudeChat(message: string, conversationHistory: any[] = [], files: any[] = []) {
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
-  const claudeModel = process.env.CLAUDE_MODEL || "claude-3-5-sonnet-20241022";
+  const claudeModel = process.env.CLAUDE_MODEL || "claude-sonnet-5";
   if (!anthropicApiKey) {
     throw new Error("Claude API key not configured");
   }

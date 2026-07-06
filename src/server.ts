@@ -36,7 +36,7 @@ type ImageSearchResult = {
 
 type ImageSearchResponse = {
   query: string;
-  provider: "tavily" | "brave" | "search-links";
+  provider: "tavily" | "brave" | "wikimedia" | "search-links";
   configured: boolean;
   images: ImageSearchResult[];
   note?: string;
@@ -58,7 +58,7 @@ app.use(
 
 const SYSTEM_PROMPT = `You are a helpful AI assistant for problem-solving support. Provide clear, structured responses using markdown formatting with professional mathematical equation rendering.
 
-IMPORTANT: You have access to DALL-E 3 for image generation. When a student asks you to generate, create, or draw an image, diagram, or illustration, tell them to use the "Generate Image" button located next to the "Attach Files" button.
+IMPORTANT: When a student asks for an image, diagram, illustration, or internet image source, do not deflect by saying to use an external image button. Give a useful response in the chat, including a concise image prompt or search phrase when appropriate, and let the app-level image tools handle image generation or internet image retrieval.
 
 Formatting requirements:
 - Format ordinary explanations, definitions, comparisons, writing feedback, and study help as polished learning notes, not as a single plain paragraph.
@@ -381,6 +381,70 @@ async function runBraveImageSearch(query: string): Promise<ImageSearchResponse |
   return { query, provider: "brave", configured: true, images };
 }
 
+async function runWikimediaImageSearch(query: string): Promise<ImageSearchResponse | null> {
+  const url = new URL("https://commons.wikimedia.org/w/api.php");
+  url.searchParams.set("action", "query");
+  url.searchParams.set("generator", "search");
+  url.searchParams.set("gsrsearch", `file:${query}`);
+  url.searchParams.set("gsrnamespace", "6");
+  url.searchParams.set("gsrlimit", "8");
+  url.searchParams.set("prop", "imageinfo");
+  url.searchParams.set("iiprop", "url|mime|size");
+  url.searchParams.set("iiurlwidth", "600");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("origin", "*");
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "Solvepistemic/1.0 image search",
+    },
+  });
+
+  if (!response.ok) return null;
+
+  const data = (await response.json()) as {
+    query?: {
+      pages?: Record<string, {
+        title?: unknown;
+        imageinfo?: Array<{
+          url?: unknown;
+          thumburl?: unknown;
+          descriptionurl?: unknown;
+          mime?: unknown;
+          width?: unknown;
+          height?: unknown;
+        }>;
+      }>;
+    };
+  };
+
+  const pages = Object.values(data.query?.pages || {});
+  const images = pages
+    .map((page, index) => {
+      const info = page.imageinfo?.[0];
+      const imageUrl = cleanSearchText(info?.url);
+      const thumbnailUrl = cleanSearchText(info?.thumburl) || imageUrl;
+      const sourceUrl = cleanSearchText(info?.descriptionurl);
+      const width = Number(info?.width);
+      const height = Number(info?.height);
+      return {
+        title: cleanSearchText(page.title).replace(/^File:/i, "") || `Wikimedia image ${index + 1}`,
+        imageUrl,
+        thumbnailUrl,
+        sourceUrl,
+        source: "Wikimedia Commons",
+        width: Number.isFinite(width) ? width : undefined,
+        height: Number.isFinite(height) ? height : undefined,
+      };
+    })
+    .filter((image) => image.imageUrl);
+
+  return images.length
+    ? { query, provider: "wikimedia" as ImageSearchResponse["provider"], configured: true, images }
+    : null;
+}
+
 async function runImageSearch(query: string): Promise<ImageSearchResponse> {
   const tavilyResult = await runTavilyImageSearch(query);
   if (tavilyResult?.images.length) return tavilyResult;
@@ -388,12 +452,15 @@ async function runImageSearch(query: string): Promise<ImageSearchResponse> {
   const braveResult = await runBraveImageSearch(query);
   if (braveResult?.images.length) return braveResult;
 
+  const wikimediaResult = await runWikimediaImageSearch(query);
+  if (wikimediaResult?.images.length) return wikimediaResult;
+
   return {
     query,
     provider: "search-links",
     configured: false,
     images: [],
-    note: "No live image search results were returned. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY to return image thumbnails from the internet.",
+    note: "No hosted image thumbnails were returned. Try the direct image-search links shown in the app.",
   };
 }
 
@@ -1230,5 +1297,9 @@ serve({
 });
 
 console.log(`AWS backend listening on port ${port}`);
+
+
+
+
 
 

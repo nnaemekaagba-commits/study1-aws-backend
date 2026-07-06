@@ -24,6 +24,24 @@ type WebSearchResponse = {
   note?: string;
 };
 
+type ImageSearchResult = {
+  title: string;
+  imageUrl: string;
+  thumbnailUrl?: string;
+  sourceUrl?: string;
+  source?: string;
+  width?: number;
+  height?: number;
+};
+
+type ImageSearchResponse = {
+  query: string;
+  provider: "tavily" | "brave" | "search-links";
+  configured: boolean;
+  images: ImageSearchResult[];
+  note?: string;
+};
+
 const app = new Hono();
 
 app.use("*", logger());
@@ -261,6 +279,121 @@ async function runWebSearch(query: string): Promise<WebSearchResponse> {
     configured: false,
     results: buildFallbackSearchResults(query),
     note: "No live web search API key is configured yet. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY to return server-side search results.",
+  };
+}
+
+async function runTavilyImageSearch(query: string): Promise<ImageSearchResponse | null> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) return null;
+
+  const response = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: apiKey,
+      query,
+      search_depth: "basic",
+      max_results: 6,
+      include_answer: false,
+      include_images: true,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Tavily image search failed: ${response.status} ${errorText.slice(0, 240)}`);
+  }
+
+  const data = (await response.json()) as {
+    images?: Array<string | { url?: unknown; description?: unknown }>;
+    results?: Array<{ title?: unknown; url?: unknown }>;
+  };
+
+  const sourceUrl = cleanSearchText(data.results?.[0]?.url);
+  const images = (data.images || [])
+    .slice(0, 8)
+    .map((image, index) => {
+      const imageUrl = typeof image === "string" ? cleanSearchText(image) : cleanSearchText(image.url);
+      const title = typeof image === "string" ? `Image result ${index + 1}` : cleanSearchText(image.description) || `Image result ${index + 1}`;
+      return {
+        title,
+        imageUrl,
+        thumbnailUrl: imageUrl,
+        sourceUrl,
+        source: sourceUrl ? "Tavily source" : "Tavily",
+      };
+    })
+    .filter((image) => image.imageUrl);
+
+  return { query, provider: "tavily", configured: true, images };
+}
+
+async function runBraveImageSearch(query: string): Promise<ImageSearchResponse | null> {
+  const apiKey = process.env.BRAVE_SEARCH_API_KEY;
+  if (!apiKey) return null;
+
+  const url = new URL("https://api.search.brave.com/res/v1/images/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", "8");
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "X-Subscription-Token": apiKey,
+    },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Brave image search failed: ${response.status} ${errorText.slice(0, 240)}`);
+  }
+
+  const data = (await response.json()) as {
+    results?: Array<{
+      title?: unknown;
+      url?: unknown;
+      source?: unknown;
+      thumbnail?: { src?: unknown };
+      properties?: { url?: unknown; width?: unknown; height?: unknown };
+      meta_url?: { hostname?: unknown };
+    }>;
+  };
+
+  const images = (data.results || [])
+    .slice(0, 8)
+    .map((result, index) => {
+      const imageUrl = cleanSearchText(result.properties?.url) || cleanSearchText(result.thumbnail?.src) || cleanSearchText(result.url);
+      const thumbnailUrl = cleanSearchText(result.thumbnail?.src) || imageUrl;
+      const width = Number(result.properties?.width);
+      const height = Number(result.properties?.height);
+      return {
+        title: cleanSearchText(result.title) || `Image result ${index + 1}`,
+        imageUrl,
+        thumbnailUrl,
+        sourceUrl: cleanSearchText(result.url) || imageUrl,
+        source: cleanSearchText(result.source) || cleanSearchText(result.meta_url?.hostname),
+        width: Number.isFinite(width) ? width : undefined,
+        height: Number.isFinite(height) ? height : undefined,
+      };
+    })
+    .filter((image) => image.imageUrl);
+
+  return { query, provider: "brave", configured: true, images };
+}
+
+async function runImageSearch(query: string): Promise<ImageSearchResponse> {
+  const tavilyResult = await runTavilyImageSearch(query);
+  if (tavilyResult?.images.length) return tavilyResult;
+
+  const braveResult = await runBraveImageSearch(query);
+  if (braveResult?.images.length) return braveResult;
+
+  return {
+    query,
+    provider: "search-links",
+    configured: false,
+    images: [],
+    note: "No live image search results were returned. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY to return image thumbnails from the internet.",
   };
 }
 
@@ -1025,6 +1158,23 @@ app.post("/web-search", async (c) => {
   }
 });
 
+app.post("/image-search", async (c) => {
+  try {
+    const { query } = await c.req.json<{ query?: string }>();
+    const cleanQuery = cleanSearchText(query).slice(0, 500);
+
+    if (!cleanQuery) {
+      return c.json({ error: "Image search query is required" }, 400);
+    }
+
+    const search = await runImageSearch(cleanQuery);
+    return c.json(search);
+  } catch (error) {
+    console.error("Error in image search endpoint:", error);
+    return c.json({ error: error instanceof Error ? error.message : "Failed to search internet images" }, 500);
+  }
+});
+
 app.post("/generate-image", async (c) => {
   try {
     const { prompt } = await c.req.json<{ prompt?: string }>();
@@ -1080,3 +1230,5 @@ serve({
 });
 
 console.log(`AWS backend listening on port ${port}`);
+
+

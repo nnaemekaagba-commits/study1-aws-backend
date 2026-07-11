@@ -464,6 +464,164 @@ async function runImageSearch(query: string): Promise<ImageSearchResponse> {
   };
 }
 
+async function generateOpenAIImage(prompt: string) {
+  const cleanPrompt = prompt.trim();
+  if (!cleanPrompt) {
+    throw new Error("Prompt is required");
+  }
+
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    throw new Error("OpenAI API key not configured");
+  }
+
+  const response = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-image-1",
+      prompt: cleanPrompt,
+      size: "1024x1024",
+      quality: "medium",
+      n: 1,
+    }),
+  });
+
+  if (!response.ok) {
+    let message = "Unknown error";
+    try {
+      const errorData = await response.json();
+      message = errorData.error?.message || message;
+    } catch {
+      message = await response.text();
+    }
+    const error = new Error(`OpenAI Image API error: ${message}`);
+    (error as any).status = 502;
+    throw error;
+  }
+
+  const data = await response.json();
+  const generatedImage = data.data?.[0];
+  const imageUrl = generatedImage?.url || (generatedImage?.b64_json ? `data:image/png;base64,${generatedImage.b64_json}` : undefined);
+
+  return {
+    imageUrl,
+    revisedPrompt: generatedImage?.revised_prompt || cleanPrompt,
+  };
+}
+
+type McpToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
+const MCP_TOOLS = [
+  {
+    name: "web_search",
+    description: "Search external web sources for the current query.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Search query" } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "image_search",
+    description: "Find internet images related to the current query.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string", description: "Image search query" } },
+      required: ["query"],
+    },
+  },
+  {
+    name: "generate_image",
+    description: "Generate an image from a text prompt using the configured OpenAI image model.",
+    inputSchema: {
+      type: "object",
+      properties: { prompt: { type: "string", description: "Image prompt" } },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "health_check",
+    description: "Check whether the Solvepistemic AWS backend is running.",
+    inputSchema: { type: "object", properties: {} },
+  },
+];
+
+function mcpTextResult(value: unknown): McpToolResult {
+  return {
+    content: [
+      {
+        type: "text",
+        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+      },
+    ],
+  };
+}
+
+function getMcpStringArg(args: unknown, name: string): string {
+  const value = args && typeof args === "object" ? (args as Record<string, unknown>)[name] : undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${name} is required`);
+  }
+  return value.trim();
+}
+
+async function callMcpTool(name: string, args: unknown): Promise<McpToolResult> {
+  switch (name) {
+    case "web_search":
+      return mcpTextResult(await runWebSearch(cleanSearchText(getMcpStringArg(args, "query")).slice(0, 500)));
+    case "image_search":
+      return mcpTextResult(await runImageSearch(cleanSearchText(getMcpStringArg(args, "query")).slice(0, 500)));
+    case "generate_image":
+      return mcpTextResult(await generateOpenAIImage(getMcpStringArg(args, "prompt")));
+    case "health_check":
+      return mcpTextResult({ status: "ok", service: "solvepistemic-aws-backend" });
+    default:
+      throw new Error(`Unknown MCP tool: ${name}`);
+  }
+}
+
+function jsonRpcResult(id: unknown, result: unknown) {
+  return { jsonrpc: "2.0", id, result };
+}
+
+function jsonRpcError(id: unknown, code: number, message: string) {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+async function handleMcpRequest(request: any) {
+  const id = request?.id ?? null;
+  try {
+    switch (request?.method) {
+      case "initialize":
+        return jsonRpcResult(id, {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "solvepistemic-mcp", version: "1.0.0" },
+        });
+      case "tools/list":
+        return jsonRpcResult(id, { tools: MCP_TOOLS });
+      case "tools/call": {
+        const toolName = request?.params?.name;
+        if (typeof toolName !== "string") {
+          return jsonRpcError(id, -32602, "Tool name is required");
+        }
+        return jsonRpcResult(id, await callMcpTool(toolName, request?.params?.arguments || {}));
+      }
+      default:
+        return jsonRpcError(id, -32601, `Unsupported MCP method: ${request?.method}`);
+    }
+  } catch (error) {
+    return jsonRpcError(id, -32000, error instanceof Error ? error.message : "MCP tool call failed");
+  }
+}
+
 function flattenMessageContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -1250,42 +1408,30 @@ app.post("/generate-image", async (c) => {
       return c.json({ error: "Prompt is required" }, 400);
     }
 
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (!openaiApiKey) {
-      return c.json({ error: "OpenAI API key not configured" }, 500);
-    }
-
-    const response = await fetch("https://api.openai.com/v1/images/generations", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-image-1",
-        prompt,
-        size: "1024x1024",
-        quality: "medium",
-        n: 1,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      return c.json({ error: `OpenAI Image API error: ${errorData.error?.message || "Unknown error"}` }, 502);
-    }
-
-    const data = await response.json();
-    const generatedImage = data.data?.[0];
-    const imageUrl = generatedImage?.url || (generatedImage?.b64_json ? `data:image/png;base64,${generatedImage.b64_json}` : undefined);
-
-    return c.json({
-      imageUrl,
-      revisedPrompt: generatedImage?.revised_prompt || prompt,
-    });
+    return c.json(await generateOpenAIImage(prompt));
   } catch (error) {
     console.error("Error generating image:", error);
-    return c.json({ error: error instanceof Error ? error.message : "Failed to generate image" }, 500);
+    const status = Number((error as any)?.status) || 500;
+    return c.json({ error: error instanceof Error ? error.message : "Failed to generate image" }, status as any);
+  }
+});
+
+app.get("/mcp", (c) => c.json({
+  name: "solvepistemic-mcp",
+  version: "1.0.0",
+  protocol: "json-rpc-2.0",
+  tools: MCP_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
+}));
+
+app.post("/mcp", async (c) => {
+  try {
+    const request = await c.req.json();
+    const response = Array.isArray(request)
+      ? await Promise.all(request.map((item) => handleMcpRequest(item)))
+      : await handleMcpRequest(request);
+    return c.json(response);
+  } catch (error) {
+    return c.json(jsonRpcError(null, -32700, error instanceof Error ? error.message : "Invalid JSON-RPC request"), 400);
   }
 });
 

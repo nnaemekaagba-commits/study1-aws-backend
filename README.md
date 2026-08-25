@@ -34,6 +34,20 @@ Use this folder as the App Runner service source. Set these environment variable
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 - `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY`
 
+### Retrieval memory (RAG)
+
+`POST /chat` retrieves relevant earlier user and assistant messages from the existing
+DynamoDB message store before calling an AI provider. Send the same identifier used
+by `/messages/:userId` as `X-Session-Id`, `X-User-Id`, `sessionId`, `userId`, or
+`memoryKey`. Only a small relevance-ranked and recent subset is included.
+
+Optional environment variables:
+
+- `RAG_ENABLED=true`
+- `RAG_MAX_MESSAGES=8`
+- `RAG_RECENT_MESSAGES=4`
+- `RAG_MAX_CHARS=8000`
+
 For storage, create a DynamoDB table named by `MESSAGES_TABLE` with:
 
 - Partition key: `pk` string

@@ -6,6 +6,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
+import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 
 type ChatProvider = "openai" | "google" | "claude";
 
@@ -1345,21 +1346,76 @@ app.delete("/messages/:userId", async (c) => {
 
 app.post("/chat", async (c) => {
   try {
-    const { message, conversationHistory = [], files = [], provider = "openai" } = await c.req.json();
+    const body = await c.req.json<{
+      message?: string;
+      conversationHistory?: RagMessage[];
+      files?: any[];
+      provider?: string;
+      userId?: string;
+      sessionId?: string;
+      memoryKey?: string;
+    }>();
+    const {
+      message,
+      conversationHistory = [],
+      files = [],
+      provider = "openai",
+    } = body;
 
     if (!message) {
       return c.json({ error: "Message is required" }, 400);
     }
 
+    const ragEnabled = process.env.RAG_ENABLED?.toLowerCase() !== "false";
+    const memoryKey = [
+      c.req.header("X-Session-Id"),
+      c.req.header("X-User-Id"),
+      body.sessionId,
+      body.userId,
+      body.memoryKey,
+    ].find((value) => typeof value === "string" && value.trim().length > 0)?.trim();
+    let memorySource: "dynamodb" | "request" | "none" = "none";
+    let memoryCandidates: RagMessage[] = conversationHistory;
+
+    if (ragEnabled && memoryKey) {
+      try {
+        memoryCandidates = await messageStore.listMessages(memoryKey);
+        memorySource = "dynamodb";
+      } catch (error) {
+        console.warn(`RAG memory retrieval failed for ${memoryKey}; using request history instead.`, error);
+        memorySource = conversationHistory.length > 0 ? "request" : "none";
+      }
+    } else if (conversationHistory.length > 0) {
+      memorySource = "request";
+    }
+
+    const retrievedHistory = ragEnabled
+      ? retrieveRelevantHistory(memoryCandidates, message, {
+          maxMessages: Number(process.env.RAG_MAX_MESSAGES) || 8,
+          maxChars: Number(process.env.RAG_MAX_CHARS) || 8_000,
+          recentMessages: Number(process.env.RAG_RECENT_MESSAGES) || 4,
+        })
+      : conversationHistory;
     const selectedProvider = normalizeProvider(provider);
     const { response, providerUsed, fallbackReason } = await runChatWithFallback(
       selectedProvider,
       message,
-      conversationHistory,
+      retrievedHistory,
       files,
     );
 
-    return c.json({ response, provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+    return c.json({
+      response,
+      provider: selectedProvider,
+      providerUsed,
+      fallbackReason,
+      isConflicting: true,
+      memory: {
+        enabled: ragEnabled,
+        source: memorySource,
+        retrievedMessages: retrievedHistory.length,
+      },
+    });
   } catch (error) {
     console.error("Error in chat endpoint:", error);
     return c.json({ error: error instanceof Error ? error.message : "Failed to process chat request" }, 500);

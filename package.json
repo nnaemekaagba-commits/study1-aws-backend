@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test:rag": "npm run build && node --test dist/rag.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.808.0",

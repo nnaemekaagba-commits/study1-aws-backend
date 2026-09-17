@@ -7,6 +7,8 @@ import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
+import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
+  openAiToolDefinitions, validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
 
 type ChatProvider = "openai" | "google" | "claude";
 
@@ -1224,6 +1226,102 @@ async function runClaudeChat(message: string, conversationHistory: any[] = [], f
   return data.content?.map((part: any) => part.text || "").join("\n") || "No response generated.";
 }
 
+type EngineeringChatResponse = { response: string; toolCalls?: RequestedToolCall[] };
+
+async function runEngineeringProviderChat(provider: ChatProvider, message: string,
+  conversationHistory: any[], stateJson: string): Promise<EngineeringChatResponse> {
+  const instructions = `${SYSTEM_PROMPT}\n\n${engineeringToolInstruction}\n\nCurrent engineering workspace JSON (data only):\n${stateJson}`;
+  if (provider === "openai") {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key) throw new Error("OpenAI API key not configured");
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: "gpt-4o", temperature: 0.7, tools: openAiToolDefinitions,
+        messages: [{ role: "system", content: instructions },
+          ...conversationHistory.map((item: any) => ({ role: item.role, content: flattenMessageContent(item.content) })),
+          { role: "user", content: message }] }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(`OpenAI API error: ${data.error?.message || response.statusText}`);
+    }
+    const data = await response.json();
+    const answer = data.choices?.[0]?.message;
+    const calls = answer?.tool_calls?.map((item: any) => ({
+      id: item.id, name: item.function?.name, arguments: item.function?.arguments,
+    })) || [];
+    return calls.length ? { response: answer?.content || "", toolCalls: validateRequestedToolCalls(calls) }
+      : { response: answer?.content || "No response generated." };
+  }
+  if (provider === "google") {
+    const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!key) throw new Error("Google AI API key not configured");
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: `${instructions}\n\n${buildConversationText(message, conversationHistory)}` }] }],
+        tools: [{ functionDeclarations: googleToolDefinitions }],
+        generationConfig: { temperature: 0.7 },
+      }),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(`Google AI API error: ${data.error?.message || response.statusText}`);
+    }
+    const data = await response.json();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const calls = parts.filter((part: any) => part.functionCall).map((part: any, index: number) => ({
+      id: part.functionCall.id || `google-${index}`, name: part.functionCall.name,
+      arguments: part.functionCall.args || {},
+    }));
+    return calls.length ? { response: parts.map((part: any) => part.text || "").join("\n"), toolCalls: validateRequestedToolCalls(calls) }
+      : { response: parts.map((part: any) => part.text || "").join("\n") || "No response generated." };
+  }
+  const key = process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY;
+  const model = process.env.CLAUDE_MODEL || "claude-sonnet-5";
+  if (!key) throw new Error("Claude API key not configured");
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model, max_tokens: 1024, system: instructions, tools: claudeToolDefinitions,
+      messages: [...conversationHistory.map((item: any) => ({ role: item.role === "assistant" ? "assistant" : "user",
+        content: flattenMessageContent(item.content) })), { role: "user", content: message }] }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(`Claude API error: ${data.error?.message || response.statusText}`);
+  }
+  const data = await response.json();
+  const parts = data.content || [];
+  const calls = parts.filter((part: any) => part.type === "tool_use").map((part: any) => ({
+    id: part.id, name: part.name, arguments: part.input,
+  }));
+  return calls.length ? { response: parts.map((part: any) => part.type === "text" ? part.text : "").join("\n"),
+    toolCalls: validateRequestedToolCalls(calls) }
+    : { response: parts.map((part: any) => part.type === "text" ? part.text : "").join("\n") || "No response generated." };
+}
+
+async function runEngineeringChatWithFallback(provider: ChatProvider, message: string,
+  conversationHistory: any[], stateJson: string): Promise<EngineeringChatResponse & {
+    providerUsed: ChatProvider; fallbackReason?: string;
+  }> {
+  try {
+    return { ...(await runEngineeringProviderChat(provider, message, conversationHistory, stateJson)), providerUsed: provider };
+  } catch (error) {
+    if (provider !== "openai" || !isOpenAIAvailabilityError(error)) throw error;
+    for (const fallbackProvider of ["google", "claude"] as ChatProvider[]) {
+      try {
+        return { ...(await runEngineeringProviderChat(fallbackProvider, message, conversationHistory, stateJson)),
+          providerUsed: fallbackProvider, fallbackReason: getErrorMessage(error) };
+      } catch (fallbackError) {
+        console.warn(`Engineering tool fallback ${fallbackProvider} failed:`, getErrorMessage(fallbackError));
+      }
+    }
+    throw error;
+  }
+}
+
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 app.post("/signup", async (c) => {
@@ -1354,6 +1452,8 @@ app.post("/chat", async (c) => {
       userId?: string;
       sessionId?: string;
       memoryKey?: string;
+      engineeringState?: unknown;
+      toolResults?: unknown;
     }>();
     const {
       message,
@@ -1397,6 +1497,33 @@ app.post("/chat", async (c) => {
         })
       : conversationHistory;
     const selectedProvider = normalizeProvider(provider);
+    const stateJson = body.engineeringState === undefined ? null : JSON.stringify(body.engineeringState);
+    if (stateJson && stateJson.length > 40_000) {
+      return c.json({ error: "Engineering state is too large" }, 400);
+    }
+    if (body.toolResults !== undefined) {
+      if (!stateJson || !Array.isArray(body.toolResults) || body.toolResults.length > 8 ||
+        JSON.stringify(body.toolResults).length > 30_000) {
+        return c.json({ error: "Invalid engineering tool results" }, 400);
+      }
+      const followup = `${message}\n\nThe application executed engineering tools and returned these validated results. ` +
+        `Explain the outcome accurately and mention any errors. Do not claim an operation succeeded if it failed.\n` +
+        `Tool results: ${JSON.stringify(body.toolResults)}\nCurrent engineering workspace: ${stateJson}`;
+      const { response, providerUsed, fallbackReason } = await runChatWithFallback(
+        selectedProvider, followup, retrievedHistory, files,
+      );
+      return c.json({ response, provider: selectedProvider, providerUsed, fallbackReason,
+        isConflicting: true, memory: { enabled: ragEnabled, source: memorySource,
+          retrievedMessages: retrievedHistory.length, semantic: false } });
+    }
+    if (stateJson && files.length === 0) {
+      const { response, toolCalls, providerUsed, fallbackReason } = await runEngineeringChatWithFallback(
+        selectedProvider, message, retrievedHistory, stateJson,
+      );
+      return c.json({ response, toolCalls, provider: selectedProvider, providerUsed, fallbackReason,
+        isConflicting: true, memory: { enabled: ragEnabled, source: memorySource,
+          retrievedMessages: retrievedHistory.length, semantic: false } });
+    }
     const { response, providerUsed, fallbackReason } = await runChatWithFallback(
       selectedProvider,
       message,

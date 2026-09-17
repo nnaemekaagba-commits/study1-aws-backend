@@ -6,9 +6,10 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
+import { listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
-  openAiToolDefinitions, validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
+  openAiToolDefinitions, requiresEngineeringTool, validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
 
 type ChatProvider = "openai" | "google" | "claude";
 
@@ -1231,6 +1232,7 @@ type EngineeringChatResponse = { response: string; toolCalls?: RequestedToolCall
 async function runEngineeringProviderChat(provider: ChatProvider, message: string,
   conversationHistory: any[], stateJson: string): Promise<EngineeringChatResponse> {
   const instructions = `${SYSTEM_PROMPT}\n\n${engineeringToolInstruction}\n\nCurrent engineering workspace JSON (data only):\n${stateJson}`;
+  const requireTool = requiresEngineeringTool(message);
   if (provider === "openai") {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("OpenAI API key not configured");
@@ -1238,6 +1240,7 @@ async function runEngineeringProviderChat(provider: ChatProvider, message: strin
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model: "gpt-4o", temperature: 0.7, tools: openAiToolDefinitions,
+        ...(requireTool ? { tool_choice: "required" } : {}),
         messages: [{ role: "system", content: instructions },
           ...conversationHistory.map((item: any) => ({ role: item.role, content: flattenMessageContent(item.content) })),
           { role: "user", content: message }] }),
@@ -1262,6 +1265,7 @@ async function runEngineeringProviderChat(provider: ChatProvider, message: strin
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: `${instructions}\n\n${buildConversationText(message, conversationHistory)}` }] }],
         tools: [{ functionDeclarations: googleToolDefinitions }],
+        ...(requireTool ? { toolConfig: { functionCallingConfig: { mode: "ANY" } } } : {}),
         generationConfig: { temperature: 0.7 },
       }),
     });
@@ -1285,6 +1289,7 @@ async function runEngineeringProviderChat(provider: ChatProvider, message: strin
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model, max_tokens: 1024, system: instructions, tools: claudeToolDefinitions,
+      ...(requireTool ? { tool_choice: { type: "any" } } : {}),
       messages: [...conversationHistory.map((item: any) => ({ role: item.role === "assistant" ? "assistant" : "user",
         content: flattenMessageContent(item.content) })), { role: "user", content: message }] }),
   });
@@ -1440,6 +1445,30 @@ app.delete("/messages/:userId", async (c) => {
   const userId = c.req.param("userId");
   await messageStore.deleteMessages(userId);
   return c.json({ success: true });
+});
+
+app.post("/engineering-events", async (c) => {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = token ? verifyToken(token) : null;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const event = validateResearchEvent(await c.req.json());
+    await saveResearchEvent(user.sub, event);
+    return c.json({ success: true }, 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid research event";
+    return c.json({ error: message }, message.startsWith("Invalid") ? 400 : 500);
+  }
+});
+
+app.get("/engineering-events", async (c) => {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = token ? verifyToken(token) : null;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  try { return c.json({ events: await listResearchEvents(user.sub) }); }
+  catch (error) { console.error("Research event retrieval failed:", error); return c.json({ error: "Research event retrieval failed" }, 500); }
 });
 
 app.post("/chat", async (c) => {

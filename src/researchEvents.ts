@@ -9,7 +9,7 @@ export type ResearchEvent = {
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
-    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move' | 'fbd_element_edit' | 'fbd_element_delete';
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move' | 'fbd_element_edit' | 'fbd_element_delete' | 'fbd_element_drag' | 'fbd_element_reposition';
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
@@ -22,6 +22,7 @@ export type ResearchEvent = {
   elementId?: string;
   before?: Record<string, unknown>;
   after?: Record<string, unknown> | null;
+  dragTarget?: 'label' | 'application';
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -42,6 +43,7 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   if (row.id !== id) return false;
+  if (row.labelPosition !== undefined && (kind === 'label' || !fbdPoint(row.labelPosition))) return false;
   if (kind === 'force' || kind === 'moment') return fbdPoint(row.at) && nonempty(row.label, 80) &&
     (row.magnitude === undefined || (typeof row.magnitude === 'number' &&
       Number.isFinite(row.magnitude) && row.magnitude >= 0)) &&
@@ -80,7 +82,7 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move', 'fbd_element_edit', 'fbd_element_delete']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move', 'fbd_element_edit', 'fbd_element_delete', 'fbd_element_drag', 'fbd_element_reposition']
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -152,14 +154,20 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
           !['force', 'moment', 'node', 'member', 'dimension', 'angle'].includes(association.kind as string) ||
           !nonempty(association.id, 128)))) throw new Error('Invalid FBD label.');
     } else if (event.label !== undefined) throw new Error('Invalid visualization label.');
-    if (event.action === 'fbd_element_edit' || event.action === 'fbd_element_delete') {
+    if (event.action === 'fbd_element_edit' || event.action === 'fbd_element_delete' ||
+      event.action === 'fbd_element_drag' || event.action === 'fbd_element_reposition') {
       const kind = event.elementKind as string;
       const id = event.elementId as string;
       if (!nonempty(id, 128) || !validFbdElement(kind, id, event.before) ||
-        (event.action === 'fbd_element_edit' ? !validFbdElement(kind, id, event.after) : event.after !== null))
+        (event.action === 'fbd_element_delete' ? event.after !== null : !validFbdElement(kind, id, event.after)) ||
+        (event.action === 'fbd_element_drag' || event.action === 'fbd_element_reposition'
+          ? !['label', 'application'].includes(event.dragTarget as string) ||
+            (event.dragTarget === 'application' && kind !== 'force')
+          : event.dragTarget !== undefined))
         throw new Error('Invalid FBD element change.');
     } else if (event.elementKind !== undefined || event.elementId !== undefined ||
-      event.before !== undefined || event.after !== undefined) throw new Error('Invalid visualization change.');
+      event.before !== undefined || event.after !== undefined || event.dragTarget !== undefined)
+      throw new Error('Invalid visualization change.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

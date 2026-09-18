@@ -183,10 +183,20 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     } else if (event.elementKind !== undefined || event.elementId !== undefined ||
       event.before !== undefined || event.after !== undefined || event.dragTarget !== undefined)
       throw new Error('Invalid visualization change.');
-    if (event.action === 'fbd_undo' || event.action === 'fbd_redo') {
+    if (event.action === 'fbd_undo' || event.action === 'fbd_redo' || event.action === 'fbd_reset') {
       if (!fbdSnapshot(event.fbdBefore) || !fbdSnapshot(event.fbdAfter) ||
         JSON.stringify(event.fbdBefore) === JSON.stringify(event.fbdAfter))
         throw new Error('Invalid FBD history transition.');
+      if (event.action === 'fbd_reset') {
+        const before = event.fbdBefore as Record<string, unknown>;
+        const after = event.fbdAfter as Record<string, unknown>;
+        const collections = ['forces', 'moments', 'dimensions', 'angles', 'labels'];
+        if (!collections.some((key) => (before[key] as unknown[]).length > 0) ||
+          !collections.every((key) => (after[key] as unknown[]).length === 0) ||
+          before.sourceStructureKey !== after.sourceStructureKey ||
+          JSON.stringify(before.selectedTarget) !== JSON.stringify(after.selectedTarget))
+          throw new Error('Invalid FBD reset transition.');
+      }
     } else if (event.fbdBefore !== undefined || event.fbdAfter !== undefined)
       throw new Error('Invalid visualization history.');
     return event as ResearchEvent;

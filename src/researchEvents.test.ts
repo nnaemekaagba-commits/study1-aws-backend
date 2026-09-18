@@ -32,6 +32,17 @@ test('visualization events are distinct and validate their action', () => {
     fbdBefore: withForce, fbdAfter: emptyFbd }).kind, 'visualization');
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_redo',
     fbdBefore: emptyFbd, fbdAfter: withForce }).kind, 'visualization');
+  const selectedEmpty = { ...emptyFbd, selectedTarget: { kind: 'member', id: 'AB' } };
+  const selectedWithForce = { ...withForce, selectedTarget: selectedEmpty.selectedTarget };
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_reset',
+    fbdBefore: selectedWithForce, fbdAfter: selectedEmpty }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_reset' }), /FBD history/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_reset',
+    fbdBefore: selectedWithForce, fbdAfter: selectedWithForce }), /FBD history/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_reset',
+    fbdBefore: selectedWithForce, fbdAfter: emptyFbd }), /FBD reset/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_reset',
+    fbdBefore: selectedEmpty, fbdAfter: emptyFbd }), /FBD reset/);
   assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_undo' }), /FBD history/);
   assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_undo',
     fbdBefore: emptyFbd, fbdAfter: emptyFbd }), /FBD history/);

@@ -9,10 +9,11 @@ export type ResearchEvent = {
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
-    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add';
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add';
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
+  dimension?: { id: string; start: { x: number; y: number }; end: { x: number; y: number }; label: string };
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -33,7 +34,7 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add']
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -62,6 +63,18 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
         (moment.magnitude !== undefined && (typeof moment.magnitude !== 'number' ||
           !Number.isFinite(moment.magnitude) || moment.magnitude < 0))) throw new Error('Invalid FBD moment.');
     } else if (event.moment !== undefined) throw new Error('Invalid visualization moment.');
+    if (event.action === 'fbd_dimension_add') {
+      const dimension = event.dimension as Record<string, unknown> | undefined;
+      const start = dimension?.start as Record<string, unknown> | undefined;
+      const end = dimension?.end as Record<string, unknown> | undefined;
+      const point = (value: Record<string, unknown> | undefined) => value &&
+        typeof value.x === 'number' && Number.isFinite(value.x) &&
+        typeof value.y === 'number' && Number.isFinite(value.y);
+      if (!dimension || !nonempty(dimension.id, 128) || !nonempty(dimension.label, 120) ||
+        !point(start) || !point(end) ||
+        Math.hypot((end!.x as number) - (start!.x as number),
+          (end!.y as number) - (start!.y as number)) < 1e-9) throw new Error('Invalid FBD dimension.');
+    } else if (event.dimension !== undefined) throw new Error('Invalid visualization dimension.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

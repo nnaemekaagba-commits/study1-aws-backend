@@ -38,6 +38,12 @@ test('visualization events are distinct and validate their action', () => {
   assert.throws(() => validateResearchEvent({ ...momentEvent, moment: undefined }), /FBD moment/);
   assert.throws(() => validateResearchEvent({ ...momentEvent,
     moment: { ...momentEvent.moment, clockwise: 'yes' } }), /FBD moment/);
+  const dimensionEvent = { ...event, action: 'fbd_dimension_add', dimension: { id: 'dimension-1',
+    start: { x: 0, y: 0 }, end: { x: 2, y: 0 }, label: '2 m' } };
+  assert.equal(validateResearchEvent(dimensionEvent).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...dimensionEvent, dimension: undefined }), /FBD dimension/);
+  assert.throws(() => validateResearchEvent({ ...dimensionEvent,
+    dimension: { ...dimensionEvent.dimension, end: { x: 0, y: 0 } } }), /FBD dimension/);
 });
 
 test('research events persist independently of chat messages', async () => {

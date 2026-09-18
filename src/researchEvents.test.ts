@@ -27,6 +27,13 @@ test('visualization events are distinct and validate their action', () => {
   for (const action of ['structure_view', 'fbd_view', 'split_view']) {
     assert.equal(validateResearchEvent({ ...event, action }).kind, 'visualization');
   }
+  for (const key of ['loads', 'dimensions', 'angles', 'labels']) {
+    for (const state of ['on', 'off']) {
+      assert.equal(validateResearchEvent({ ...event, action: `fbd_given_${key}_${state}` }).kind,
+        'visualization');
+    }
+  }
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_given_reactions_on' }), /visualization action/);
   const emptyFbd = { version: 1, sourceStructureKey: 'structure-1', selectedTarget: null,
     forces: [], moments: [], dimensions: [], angles: [], labels: [] };
   const withForce = { ...emptyFbd, forces: [{ id: 'force-1', at: { x: 1, y: 0 },

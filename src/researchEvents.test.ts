@@ -32,6 +32,12 @@ test('visualization events are distinct and validate their action', () => {
   assert.equal(validateResearchEvent(forceEvent).kind, 'visualization');
   assert.throws(() => validateResearchEvent({ ...forceEvent, force: undefined }), /FBD force/);
   assert.throws(() => validateResearchEvent({ ...forceEvent, force: { ...forceEvent.force, angle: Infinity } }), /FBD force/);
+  const momentEvent = { ...event, action: 'fbd_moment_add', moment: { id: 'moment-1',
+    at: { x: 2, y: 0 }, clockwise: false, label: 'M', magnitude: 5 } };
+  assert.equal(validateResearchEvent(momentEvent).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...momentEvent, moment: undefined }), /FBD moment/);
+  assert.throws(() => validateResearchEvent({ ...momentEvent,
+    moment: { ...momentEvent.moment, clockwise: 'yes' } }), /FBD moment/);
 });
 
 test('research events persist independently of chat messages', async () => {

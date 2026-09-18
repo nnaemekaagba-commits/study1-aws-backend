@@ -23,6 +23,8 @@ export type ResearchEvent = {
   before?: Record<string, unknown>;
   after?: Record<string, unknown> | null;
   dragTarget?: 'label' | 'application';
+  fbdBefore?: Record<string, unknown>;
+  fbdAfter?: Record<string, unknown>;
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -32,6 +34,19 @@ const structure = (value: unknown) => {
   const row = value as Record<string, unknown>;
   return ['nodes', 'members', 'supports', 'loads', 'dimensions'].every((key) => Array.isArray(row[key])) &&
     !!row.units && typeof row.units === 'object' && !Array.isArray(row.units);
+};
+const fbdSnapshot = (value: unknown) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  const target = state.selectedTarget;
+  return state.version === 1 && nonempty(state.sourceStructureKey, 128) &&
+    (target === null || (!!target && typeof target === 'object' && !Array.isArray(target) &&
+      ['body', 'member', 'joint'].includes((target as Record<string, unknown>).kind as string) &&
+      nonempty((target as Record<string, unknown>).id, 128))) &&
+    ['forces', 'moments', 'dimensions', 'angles', 'labels'].every((key) =>
+      Array.isArray(state[key]) && (state[key] as unknown[]).every((item) =>
+        !!item && typeof item === 'object' && !Array.isArray(item) &&
+        nonempty((item as Record<string, unknown>).id, 128)));
 };
 const fbdPoint = (value: unknown): value is { x: number; y: number } => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -168,6 +183,12 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     } else if (event.elementKind !== undefined || event.elementId !== undefined ||
       event.before !== undefined || event.after !== undefined || event.dragTarget !== undefined)
       throw new Error('Invalid visualization change.');
+    if (event.action === 'fbd_undo' || event.action === 'fbd_redo') {
+      if (!fbdSnapshot(event.fbdBefore) || !fbdSnapshot(event.fbdAfter) ||
+        JSON.stringify(event.fbdBefore) === JSON.stringify(event.fbdAfter))
+        throw new Error('Invalid FBD history transition.');
+    } else if (event.fbdBefore !== undefined || event.fbdAfter !== undefined)
+      throw new Error('Invalid visualization history.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

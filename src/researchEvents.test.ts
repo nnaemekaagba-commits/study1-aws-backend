@@ -24,6 +24,17 @@ test('visualization events are distinct and validate their action', () => {
   assert.throws(() => validateResearchEvent({ ...event, action: 'change_load' }), /visualization action/);
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_enter' }).kind, 'visualization');
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_exit' }).kind, 'visualization');
+  const emptyFbd = { version: 1, sourceStructureKey: 'structure-1', selectedTarget: null,
+    forces: [], moments: [], dimensions: [], angles: [], labels: [] };
+  const withForce = { ...emptyFbd, forces: [{ id: 'force-1', at: { x: 1, y: 0 },
+    angle: -90, label: 'P' }] };
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_undo',
+    fbdBefore: withForce, fbdAfter: emptyFbd }).kind, 'visualization');
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_redo',
+    fbdBefore: emptyFbd, fbdAfter: withForce }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_undo' }), /FBD history/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_undo',
+    fbdBefore: emptyFbd, fbdAfter: emptyFbd }), /FBD history/);
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_select',
     target: { kind: 'member', id: 'AB' } }).kind, 'visualization');
   assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select' }), /FBD selection/);

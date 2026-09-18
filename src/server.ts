@@ -6,7 +6,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
-import { decodeRecordedWav, rejectChatAttachments } from "./studentInput.js";
+import { decodeRecordedWav, studentAttachmentError } from "./studentInput.js";
 import { listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
@@ -47,7 +47,7 @@ type ImageSearchResponse = {
   note?: string;
 };
 
-const app = new Hono();
+export const app = new Hono();
 
 app.use("*", logger());
 app.use(
@@ -1420,8 +1420,9 @@ app.post("/messages/:userId", async (c) => {
     return c.json({ error: "Missing required fields: userId, id, role, content, timestamp" }, 400);
   }
 
-  if (role === "user" && rejectChatAttachments(body.attachments)) {
-    return c.json({ error: "Student attachments are disabled" }, 400);
+  const inputError = studentAttachmentError(body, false, role === "user");
+  if (inputError) {
+    return c.json({ error: inputError }, 400);
   }
 
   const message = await messageStore.saveMessage(userId, body);
@@ -1525,8 +1526,9 @@ app.post("/chat", async (c) => {
       provider = "openai",
     } = body;
 
-    if (rejectChatAttachments(body.files)) {
-      return c.json({ error: "Student attachments are disabled. Use text or voice transcription." }, 400);
+    const inputError = studentAttachmentError(body, true);
+    if (inputError) {
+      return c.json({ error: inputError }, 400);
     }
 
     if (!message) {
@@ -1687,15 +1689,7 @@ app.post("/mcp", async (c) => {
 
 const port = Number(process.env.PORT || 8080);
 
-serve({
-  fetch: app.fetch,
-  port,
-});
-
-console.log(`AWS backend listening on port ${port}`);
-
-
-
-
-
-
+if (process.env.NODE_ENV !== "test") {
+  serve({ fetch: app.fetch, port });
+  console.log(`AWS backend listening on port ${port}`);
+}

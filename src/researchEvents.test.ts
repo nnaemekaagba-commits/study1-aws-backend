@@ -51,6 +51,16 @@ test('visualization events are distinct and validate their action', () => {
     fbdBefore: emptyFbd, fbdAfter: emptyFbd }), /FBD history/);
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_select',
     target: { kind: 'member', id: 'AB' } }).kind, 'visualization');
+  const selectedJoint = { ...emptyFbd, selectedTarget: { kind: 'joint', id: 'A' } };
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_select',
+    target: selectedJoint.selectedTarget, fbdBefore: withForce, fbdAfter: selectedJoint }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select',
+    target: selectedJoint.selectedTarget, fbdBefore: withForce, fbdAfter: withForce }), /FBD history/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select',
+    target: { kind: 'member', id: 'AB' }, fbdBefore: withForce, fbdAfter: selectedJoint }), /FBD selection/);
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select',
+    target: selectedJoint.selectedTarget, fbdBefore: withForce,
+    fbdAfter: { ...selectedJoint, forces: withForce.forces } }), /FBD selection/);
   assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select' }), /FBD selection/);
   const forceEvent = { ...event, action: 'fbd_force_add', force: { id: 'force-1',
     at: { x: 2, y: 0 }, angle: -90, label: 'P', magnitude: 10 } };

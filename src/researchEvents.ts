@@ -184,10 +184,22 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     } else if (event.elementKind !== undefined || event.elementId !== undefined ||
       event.before !== undefined || event.after !== undefined || event.dragTarget !== undefined)
       throw new Error('Invalid visualization change.');
-    if (event.action === 'fbd_undo' || event.action === 'fbd_redo' || event.action === 'fbd_reset') {
+    const hasSelectionSnapshots = (event.action === 'fbd_select' || event.action === 'fbd_delete') &&
+      (event.fbdBefore !== undefined || event.fbdAfter !== undefined);
+    if (event.action === 'fbd_undo' || event.action === 'fbd_redo' || event.action === 'fbd_reset' ||
+      hasSelectionSnapshots) {
       if (!fbdSnapshot(event.fbdBefore) || !fbdSnapshot(event.fbdAfter) ||
         JSON.stringify(event.fbdBefore) === JSON.stringify(event.fbdAfter))
         throw new Error('Invalid FBD history transition.');
+      if (hasSelectionSnapshots) {
+        const before = event.fbdBefore as Record<string, unknown>;
+        const after = event.fbdAfter as Record<string, unknown>;
+        if (before.sourceStructureKey !== after.sourceStructureKey ||
+          JSON.stringify(after.selectedTarget) !== JSON.stringify(event.action === 'fbd_select' ? event.target : null) ||
+          ['forces', 'moments', 'dimensions', 'angles', 'labels'].some((key) =>
+            (after[key] as unknown[]).length > 0))
+          throw new Error('Invalid FBD selection transition.');
+      }
       if (event.action === 'fbd_reset') {
         const before = event.fbdBefore as Record<string, unknown>;
         const after = event.fbdAfter as Record<string, unknown>;

@@ -24,6 +24,9 @@ test('visualization events are distinct and validate their action', () => {
   assert.throws(() => validateResearchEvent({ ...event, action: 'change_load' }), /visualization action/);
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_enter' }).kind, 'visualization');
   assert.equal(validateResearchEvent({ ...event, action: 'fbd_exit' }).kind, 'visualization');
+  for (const action of ['structure_view', 'fbd_view', 'split_view']) {
+    assert.equal(validateResearchEvent({ ...event, action }).kind, 'visualization');
+  }
   const emptyFbd = { version: 1, sourceStructureKey: 'structure-1', selectedTarget: null,
     forces: [], moments: [], dimensions: [], angles: [], labels: [] };
   const withForce = { ...emptyFbd, forces: [{ id: 'force-1', at: { x: 1, y: 0 },

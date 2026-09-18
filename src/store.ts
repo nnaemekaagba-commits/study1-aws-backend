@@ -15,6 +15,8 @@ export interface StoredMessage {
   aiProvider?: string;
   feedback?: string;
   attachments?: unknown[];
+  inputModality?: "text" | "audio";
+  transcriptionSource?: "browser-speech" | "recorded-audio";
   isIncorrect?: boolean;
   isConflicting?: boolean;
 }

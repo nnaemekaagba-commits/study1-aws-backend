@@ -6,6 +6,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
+import { decodeRecordedWav, rejectChatAttachments } from "./studentInput.js";
 import { listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
@@ -1419,6 +1420,10 @@ app.post("/messages/:userId", async (c) => {
     return c.json({ error: "Missing required fields: userId, id, role, content, timestamp" }, 400);
   }
 
+  if (role === "user" && rejectChatAttachments(body.attachments)) {
+    return c.json({ error: "Student attachments are disabled" }, 400);
+  }
+
   const message = await messageStore.saveMessage(userId, body);
   return c.json({ success: true, message });
 });
@@ -1471,6 +1476,35 @@ app.get("/engineering-events", async (c) => {
   catch (error) { console.error("Research event retrieval failed:", error); return c.json({ error: "Research event retrieval failed" }, 500); }
 });
 
+app.post("/transcribe", async (c) => {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!token || !verifyToken(token)) return c.json({ error: "Unauthorized" }, 401);
+  let body: { audio?: unknown };
+  try { body = await c.req.json<{ audio?: unknown }>(); }
+  catch { return c.json({ error: "Invalid audio request" }, 400); }
+  const wav = decodeRecordedWav(body.audio);
+  if (!wav) return c.json({ error: "Only microphone WAV recordings are accepted" }, 400);
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return c.json({ error: "Audio transcription is unavailable" }, 503);
+  try {
+    const form = new FormData();
+    form.append("model", "gpt-4o-mini-transcribe");
+    form.append("file", new Blob([new Uint8Array(wav)], { type: "audio/wav" }), "recording.wav");
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
+    });
+    const result = await response.json() as { text?: string; error?: { message?: string } };
+    if (!response.ok || !result.text?.trim()) {
+      return c.json({ error: result.error?.message || "Audio transcription failed" }, 502);
+    }
+    return c.json({ text: result.text.trim() });
+  } catch (error) {
+    console.error("Audio transcription failed:", error);
+    return c.json({ error: "Audio transcription failed" }, 502);
+  }
+});
+
 app.post("/chat", async (c) => {
   try {
     const body = await c.req.json<{
@@ -1490,6 +1524,10 @@ app.post("/chat", async (c) => {
       files = [],
       provider = "openai",
     } = body;
+
+    if (rejectChatAttachments(body.files)) {
+      return c.json({ error: "Student attachments are disabled. Use text or voice transcription." }, 400);
+    }
 
     if (!message) {
       return c.json({ error: "Message is required" }, 400);

@@ -8,7 +8,9 @@ export type ResearchEvent = {
   aiResponse: string; succeeded: boolean; error?: string;
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
-  action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd';
+  action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset';
+  target?: { kind: 'body' | 'member' | 'joint'; id: string };
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -28,9 +30,16 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     !nonempty(event.sessionId, 128) || !nonempty(event.timestamp, 40) ||
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
-    if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd'].includes(event.action as string)) {
+    if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset']
+      .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
+    if (event.action === 'fbd_select') {
+      const target = event.target as Record<string, unknown> | undefined;
+      if (!target || !['body', 'member', 'joint'].includes(target.kind as string) ||
+        !nonempty(target.id, 128)) throw new Error('Invalid FBD selection.');
+    } else if (event.target !== undefined) throw new Error('Invalid visualization target.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

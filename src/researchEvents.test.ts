@@ -22,6 +22,11 @@ test('visualization events are distinct and validate their action', () => {
     timestamp: '2026-09-17T12:00:01.000Z', action: 'front' };
   assert.equal(validateResearchEvent(event).kind, 'visualization');
   assert.throws(() => validateResearchEvent({ ...event, action: 'change_load' }), /visualization action/);
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_enter' }).kind, 'visualization');
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_exit' }).kind, 'visualization');
+  assert.equal(validateResearchEvent({ ...event, action: 'fbd_select',
+    target: { kind: 'member', id: 'AB' } }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...event, action: 'fbd_select' }), /FBD selection/);
 });
 
 test('research events persist independently of chat messages', async () => {

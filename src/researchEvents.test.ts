@@ -57,6 +57,13 @@ test('visualization events are distinct and validate their action', () => {
   assert.throws(() => validateResearchEvent({ ...labelEvent, label: undefined }), /FBD label/);
   assert.throws(() => validateResearchEvent({ ...labelEvent,
     label: { ...labelEvent.label, associatedWith: { kind: 'force', id: '' } } }), /FBD label/);
+  const change = { ...event, action: 'fbd_element_edit', elementKind: 'force', elementId: 'force-1',
+    before: forceEvent.force, after: { ...forceEvent.force, magnitude: 8, angle: -45 } };
+  assert.equal(validateResearchEvent(change).kind, 'visualization');
+  assert.equal(validateResearchEvent({ ...change, action: 'fbd_element_delete', after: null }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...change, before: undefined }), /FBD element change/);
+  assert.throws(() => validateResearchEvent({ ...change, after: null }), /FBD element change/);
+  assert.throws(() => validateResearchEvent({ ...change, action: 'fbd_element_delete' }), /FBD element change/);
 });
 
 test('research events persist independently of chat messages', async () => {

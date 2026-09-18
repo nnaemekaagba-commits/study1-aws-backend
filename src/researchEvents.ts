@@ -9,7 +9,7 @@ export type ResearchEvent = {
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
-    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move';
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move' | 'fbd_element_edit' | 'fbd_element_delete';
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
@@ -18,6 +18,10 @@ export type ResearchEvent = {
     to: { x: number; y: number }; label: string };
   label?: { id: string; at: { x: number; y: number }; text: string;
     associatedWith?: { kind: 'force' | 'moment' | 'node' | 'member' | 'dimension' | 'angle'; id: string } };
+  elementKind?: 'force' | 'moment' | 'dimension' | 'angle' | 'label';
+  elementId?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown> | null;
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -28,6 +32,44 @@ const structure = (value: unknown) => {
   return ['nodes', 'members', 'supports', 'loads', 'dimensions'].every((key) => Array.isArray(row[key])) &&
     !!row.units && typeof row.units === 'object' && !Array.isArray(row.units);
 };
+const fbdPoint = (value: unknown): value is { x: number; y: number } => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const point = value as Record<string, unknown>;
+  return typeof point.x === 'number' && Number.isFinite(point.x) &&
+    typeof point.y === 'number' && Number.isFinite(point.y);
+};
+function validFbdElement(kind: string, id: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (row.id !== id) return false;
+  if (kind === 'force' || kind === 'moment') return fbdPoint(row.at) && nonempty(row.label, 80) &&
+    (row.magnitude === undefined || (typeof row.magnitude === 'number' &&
+      Number.isFinite(row.magnitude) && row.magnitude >= 0)) &&
+    (kind === 'force' ? typeof row.angle === 'number' && Number.isFinite(row.angle) :
+      typeof row.clockwise === 'boolean');
+  if (kind === 'dimension') return fbdPoint(row.start) && fbdPoint(row.end) &&
+    Math.hypot((row.end as { x: number; y: number }).x - (row.start as { x: number; y: number }).x,
+      (row.end as { x: number; y: number }).y - (row.start as { x: number; y: number }).y) >= 1e-9 &&
+    nonempty(row.label, 120);
+  if (kind === 'angle') {
+    if (!fbdPoint(row.vertex) || !fbdPoint(row.from) || !fbdPoint(row.to) || !nonempty(row.label, 120)) return false;
+    const vertex = row.vertex as { x: number; y: number };
+    const from = row.from as { x: number; y: number };
+    const to = row.to as { x: number; y: number };
+    const ax = from.x - vertex.x; const ay = from.y - vertex.y;
+    const bx = to.x - vertex.x; const by = to.y - vertex.y;
+    const length = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    return length >= 1e-18 && !(Math.abs(ax * by - ay * bx) / length < 1e-9 && ax * bx + ay * by > 0);
+  }
+  if (kind === 'label') {
+    const association = row.associatedWith as Record<string, unknown> | undefined;
+    return fbdPoint(row.at) && nonempty(row.text, 120) &&
+      (association === undefined || (!!association &&
+        ['force', 'moment', 'node', 'member', 'dimension', 'angle'].includes(association.kind as string) &&
+        nonempty(association.id, 128)));
+  }
+  return false;
+}
 
 export function validateResearchEvent(input: unknown): ResearchEvent {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid research event.');
@@ -38,7 +80,7 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move', 'fbd_element_edit', 'fbd_element_delete']
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -110,6 +152,14 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
           !['force', 'moment', 'node', 'member', 'dimension', 'angle'].includes(association.kind as string) ||
           !nonempty(association.id, 128)))) throw new Error('Invalid FBD label.');
     } else if (event.label !== undefined) throw new Error('Invalid visualization label.');
+    if (event.action === 'fbd_element_edit' || event.action === 'fbd_element_delete') {
+      const kind = event.elementKind as string;
+      const id = event.elementId as string;
+      if (!nonempty(id, 128) || !validFbdElement(kind, id, event.before) ||
+        (event.action === 'fbd_element_edit' ? !validFbdElement(kind, id, event.after) : event.after !== null))
+        throw new Error('Invalid FBD element change.');
+    } else if (event.elementKind !== undefined || event.elementId !== undefined ||
+      event.before !== undefined || event.after !== undefined) throw new Error('Invalid visualization change.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

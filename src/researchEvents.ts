@@ -9,13 +9,15 @@ export type ResearchEvent = {
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
-    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add';
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move';
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
   dimension?: { id: string; start: { x: number; y: number }; end: { x: number; y: number }; label: string };
   angle?: { id: string; vertex: { x: number; y: number }; from: { x: number; y: number };
     to: { x: number; y: number }; label: string };
+  label?: { id: string; at: { x: number; y: number }; text: string;
+    associatedWith?: { kind: 'force' | 'moment' | 'node' | 'member' | 'dimension' | 'angle'; id: string } };
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -36,7 +38,7 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move']
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -97,6 +99,17 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
       if (length < 1e-18 || (Math.abs(ax * by - ay * bx) / length < 1e-9 && ax * bx + ay * by > 0))
         throw new Error('Invalid FBD angle.');
     } else if (event.angle !== undefined) throw new Error('Invalid visualization angle.');
+    if (event.action === 'fbd_label_add' || event.action === 'fbd_label_move') {
+      const label = event.label as Record<string, unknown> | undefined;
+      const at = label?.at as Record<string, unknown> | undefined;
+      const association = label?.associatedWith as Record<string, unknown> | undefined;
+      if (!label || !nonempty(label.id, 128) || !nonempty(label.text, 120) ||
+        !at || typeof at.x !== 'number' || !Number.isFinite(at.x) ||
+        typeof at.y !== 'number' || !Number.isFinite(at.y) ||
+        (association !== undefined && (!association ||
+          !['force', 'moment', 'node', 'member', 'dimension', 'angle'].includes(association.kind as string) ||
+          !nonempty(association.id, 128)))) throw new Error('Invalid FBD label.');
+    } else if (event.label !== undefined) throw new Error('Invalid visualization label.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

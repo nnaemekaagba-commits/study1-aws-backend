@@ -44,6 +44,12 @@ test('visualization events are distinct and validate their action', () => {
   assert.throws(() => validateResearchEvent({ ...dimensionEvent, dimension: undefined }), /FBD dimension/);
   assert.throws(() => validateResearchEvent({ ...dimensionEvent,
     dimension: { ...dimensionEvent.dimension, end: { x: 0, y: 0 } } }), /FBD dimension/);
+  const angleEvent = { ...event, action: 'fbd_angle_add', angle: { id: 'angle-1',
+    vertex: { x: 0, y: 0 }, from: { x: 1, y: 0 }, to: { x: 0, y: 1 }, label: '30°' } };
+  assert.equal(validateResearchEvent(angleEvent).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...angleEvent, angle: undefined }), /FBD angle/);
+  assert.throws(() => validateResearchEvent({ ...angleEvent,
+    angle: { ...angleEvent.angle, to: { x: 2, y: 0 } } }), /FBD angle/);
 });
 
 test('research events persist independently of chat messages', async () => {

@@ -9,11 +9,13 @@ export type ResearchEvent = {
 } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
-    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add';
+    'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add';
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
   dimension?: { id: string; start: { x: number; y: number }; end: { x: number; y: number }; label: string };
+  angle?: { id: string; vertex: { x: number; y: number }; from: { x: number; y: number };
+    to: { x: number; y: number }; label: string };
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -34,7 +36,7 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add']
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -75,6 +77,26 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
         Math.hypot((end!.x as number) - (start!.x as number),
           (end!.y as number) - (start!.y as number)) < 1e-9) throw new Error('Invalid FBD dimension.');
     } else if (event.dimension !== undefined) throw new Error('Invalid visualization dimension.');
+    if (event.action === 'fbd_angle_add') {
+      const angle = event.angle as Record<string, unknown> | undefined;
+      const point = (value: unknown): value is { x: number; y: number } => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const row = value as Record<string, unknown>;
+        return typeof row.x === 'number' && Number.isFinite(row.x) &&
+          typeof row.y === 'number' && Number.isFinite(row.y);
+      };
+      if (!angle || !nonempty(angle.id, 128) || !nonempty(angle.label, 120) ||
+        !point(angle.vertex) || !point(angle.from) || !point(angle.to))
+        throw new Error('Invalid FBD angle.');
+      const vertex = angle.vertex as { x: number; y: number };
+      const from = angle.from as { x: number; y: number };
+      const to = angle.to as { x: number; y: number };
+      const ax = from.x - vertex.x; const ay = from.y - vertex.y;
+      const bx = to.x - vertex.x; const by = to.y - vertex.y;
+      const length = Math.hypot(ax, ay) * Math.hypot(bx, by);
+      if (length < 1e-18 || (Math.abs(ax * by - ay * bx) / length < 1e-9 && ax * bx + ay * by > 0))
+        throw new Error('Invalid FBD angle.');
+    } else if (event.angle !== undefined) throw new Error('Invalid visualization angle.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

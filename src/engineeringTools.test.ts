@@ -1,16 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineeringTools, engineeringToolNames, openAiToolDefinitions,
-  googleToolDefinitions, claudeToolDefinitions, requiresEngineeringTool, validateRequestedToolCalls } from './engineeringTools.js';
+  googleToolDefinitions, claudeToolDefinitions, requiresEngineeringTool, requiresFBDTool,
+  fbdMutationToolNames, validateRequestedToolCalls } from './engineeringTools.js';
 
 test('all engineering tools are declared for each provider', () => {
-  assert.equal(engineeringTools.length, 11);
-  assert.equal(engineeringToolNames.size, 11);
+  assert.equal(engineeringTools.length, 24);
+  assert.equal(engineeringToolNames.size, 24);
+  assert.equal(fbdMutationToolNames.size, 13);
   assert.deepEqual(openAiToolDefinitions.map((item) => item.function.name), engineeringTools.map((item) => item.name));
   assert.deepEqual(googleToolDefinitions.map((item) => item.name), engineeringTools.map((item) => item.name));
   assert.deepEqual(claudeToolDefinitions.map((item) => item.name), engineeringTools.map((item) => item.name));
   assert.ok(openAiToolDefinitions.every((item) => item.function.parameters.additionalProperties === false));
   assert.ok(claudeToolDefinitions.every((item) => item.input_schema.additionalProperties === false));
+});
+
+test('FBD advice does not request a mutation tool', () => {
+  for (const message of ['What should I consider here?', 'What does a pin support contribute?',
+    'Am I missing anything?', 'How can I add a force?']) assert.equal(requiresFBDTool(message), false);
+  assert.equal(requiresFBDTool('Please add a force arrow to my FBD.'), true);
+  assert.equal(requiresFBDTool('Move my FBD force label.'), true);
+  assert.equal(validateRequestedToolCalls([{ id: 'one', name: 'fbd_add_force',
+    arguments: '{"x":2,"y":0,"angle":-90,"label":"P"}' }]).length, 1);
 });
 
 test('clear structural edit requests require a function call', () => {

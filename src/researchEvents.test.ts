@@ -10,6 +10,20 @@ const toolEvent = {
   aiResponse: 'Moved the load.', succeeded: true,
 };
 
+test('FBD chat edits require before and after snapshots; failed attempts preserve state', () => {
+  const empty = { version: 1, sourceStructureKey: 'structure-1', selectedTarget: { kind: 'body', id: 'structure' },
+    forces: [], moments: [], dimensions: [], angles: [], labels: [] };
+  const changed = { ...empty, forces: [{ id: 'force-1', at: { x: 2, y: 0 }, angle: -90, label: 'P' }] };
+  const event = { kind: 'fbd_tool', eventId: 'fbd-1', sessionId: 'session-1',
+    timestamp: '2026-09-17T12:00:00.000Z', studentMessage: 'Add a force to my FBD',
+    toolName: 'fbd_add_force', toolArguments: { x: 2, y: 0, angle: -90, label: 'P' },
+    stateBefore: empty, stateAfter: changed, aiResponse: 'Added the force.', succeeded: true };
+  assert.equal(validateResearchEvent(event).kind, 'fbd_tool');
+  assert.throws(() => validateResearchEvent({ ...event, succeeded: false }), /Invalid FBD tool/);
+  assert.equal(validateResearchEvent({ ...event, succeeded: false, stateAfter: empty }).kind, 'fbd_tool');
+  assert.throws(() => validateResearchEvent({ ...event, stateBefore: null }), /Invalid FBD tool/);
+});
+
 test('research tool events require snapshots, outcome, and session metadata', () => {
   assert.equal(validateResearchEvent(toolEvent).kind, 'tool');
   assert.throws(() => validateResearchEvent({ ...toolEvent, stateAfter: null }), /Invalid engineering tool/);

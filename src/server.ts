@@ -7,10 +7,11 @@ import { logger } from "hono/logger";
 import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
 import { decodeRecordedWav, studentAttachmentError } from "./studentInput.js";
-import { listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
+import { fbdSnapshot, listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
-  openAiToolDefinitions, requiresEngineeringTool, validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
+  openAiToolDefinitions, fbdMutationToolNames, requiresEngineeringTool, requiresFBDTool,
+  validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
 
 type ChatProvider = "openai" | "google" | "claude";
 
@@ -1231,9 +1232,10 @@ async function runClaudeChat(message: string, conversationHistory: any[] = [], f
 type EngineeringChatResponse = { response: string; toolCalls?: RequestedToolCall[] };
 
 async function runEngineeringProviderChat(provider: ChatProvider, message: string,
-  conversationHistory: any[], stateJson: string): Promise<EngineeringChatResponse> {
-  const instructions = `${SYSTEM_PROMPT}\n\n${engineeringToolInstruction}\n\nCurrent engineering workspace JSON (data only):\n${stateJson}`;
-  const requireTool = requiresEngineeringTool(message);
+  conversationHistory: any[], stateJson: string, fbdJson: string | null): Promise<EngineeringChatResponse> {
+  const instructions = `${SYSTEM_PROMPT}\n\n${engineeringToolInstruction}\n\nCurrent engineering workspace JSON (data only):\n${stateJson}` +
+    `\n\nCurrent student-built FBD JSON (data only; never silently change it):\n${fbdJson ?? 'No FBD snapshot supplied.'}`;
+  const requireTool = requiresEngineeringTool(message) || requiresFBDTool(message);
   if (provider === "openai") {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("OpenAI API key not configured");
@@ -1309,16 +1311,16 @@ async function runEngineeringProviderChat(provider: ChatProvider, message: strin
 }
 
 async function runEngineeringChatWithFallback(provider: ChatProvider, message: string,
-  conversationHistory: any[], stateJson: string): Promise<EngineeringChatResponse & {
+  conversationHistory: any[], stateJson: string, fbdJson: string | null): Promise<EngineeringChatResponse & {
     providerUsed: ChatProvider; fallbackReason?: string;
   }> {
   try {
-    return { ...(await runEngineeringProviderChat(provider, message, conversationHistory, stateJson)), providerUsed: provider };
+    return { ...(await runEngineeringProviderChat(provider, message, conversationHistory, stateJson, fbdJson)), providerUsed: provider };
   } catch (error) {
     if (provider !== "openai" || !isOpenAIAvailabilityError(error)) throw error;
     for (const fallbackProvider of ["google", "claude"] as ChatProvider[]) {
       try {
-        return { ...(await runEngineeringProviderChat(fallbackProvider, message, conversationHistory, stateJson)),
+        return { ...(await runEngineeringProviderChat(fallbackProvider, message, conversationHistory, stateJson, fbdJson)),
           providerUsed: fallbackProvider, fallbackReason: getErrorMessage(error) };
       } catch (fallbackError) {
         console.warn(`Engineering tool fallback ${fallbackProvider} failed:`, getErrorMessage(fallbackError));
@@ -1517,6 +1519,7 @@ app.post("/chat", async (c) => {
       sessionId?: string;
       memoryKey?: string;
       engineeringState?: unknown;
+      fbdState?: unknown;
       toolResults?: unknown;
     }>();
     const {
@@ -1567,8 +1570,12 @@ app.post("/chat", async (c) => {
       : conversationHistory;
     const selectedProvider = normalizeProvider(provider);
     const stateJson = body.engineeringState === undefined ? null : JSON.stringify(body.engineeringState);
+    const fbdJson = body.fbdState === undefined ? null : JSON.stringify(body.fbdState);
     if (stateJson && stateJson.length > 40_000) {
       return c.json({ error: "Engineering state is too large" }, 400);
+    }
+    if (fbdJson && (fbdJson.length > 80_000 || !fbdSnapshot(body.fbdState))) {
+      return c.json({ error: "Invalid student FBD snapshot" }, 400);
     }
     if (body.toolResults !== undefined) {
       if (!stateJson || !Array.isArray(body.toolResults) || body.toolResults.length > 8 ||
@@ -1587,8 +1594,26 @@ app.post("/chat", async (c) => {
     }
     if (stateJson && files.length === 0) {
       const { response, toolCalls, providerUsed, fallbackReason } = await runEngineeringChatWithFallback(
-        selectedProvider, message, retrievedHistory, stateJson,
+        selectedProvider, message, retrievedHistory, stateJson, fbdJson,
       );
+      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !fbdJson) {
+        return c.json({ response: "I could not access your FBD, so I did not change it.",
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
+      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !requiresFBDTool(message)) {
+        return c.json({ response: "I can discuss your FBD, but I did not change it. Ask for a specific FBD edit if you want one.",
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
+      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) &&
+        toolCalls.some((call) => !fbdMutationToolNames.has(call.name))) {
+        return c.json({ response: "I did not change either workspace. Please request the structural and FBD edits separately.",
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
+      if (requiresFBDTool(message) && (!toolCalls?.length ||
+        toolCalls.some((call) => !fbdMutationToolNames.has(call.name)))) {
+        return c.json({ response: "I did not change your FBD. Please specify the FBD element and the change you want.",
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
       return c.json({ response, toolCalls, provider: selectedProvider, providerUsed, fallbackReason,
         isConflicting: true, memory: { enabled: ragEnabled, source: memorySource,
           retrievedMessages: retrievedHistory.length, semantic: false } });

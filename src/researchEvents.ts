@@ -7,6 +7,11 @@ export type ResearchEvent = {
   stateBefore: unknown; stateAfter: unknown; solverResult?: unknown;
   aiResponse: string; succeeded: boolean; error?: string;
 } | {
+  kind: 'fbd_tool'; eventId: string; sessionId: string; timestamp: string;
+  studentMessage: string; toolName: string; toolArguments: unknown;
+  stateBefore: unknown; stateAfter: unknown;
+  aiResponse: string; succeeded: boolean; error?: string;
+} | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
     `fbd_given_${'loads' | 'dimensions' | 'angles' | 'labels'}_${'on' | 'off'}` |
@@ -36,7 +41,7 @@ const structure = (value: unknown) => {
   return ['nodes', 'members', 'supports', 'loads', 'dimensions'].every((key) => Array.isArray(row[key])) &&
     !!row.units && typeof row.units === 'object' && !Array.isArray(row.units);
 };
-const fbdSnapshot = (value: unknown) => {
+export const fbdSnapshot = (value: unknown) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const state = value as Record<string, unknown>;
   const target = state.selectedTarget;
@@ -215,6 +220,17 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
       }
     } else if (event.fbdBefore !== undefined || event.fbdAfter !== undefined)
       throw new Error('Invalid visualization history.');
+    return event as ResearchEvent;
+  }
+  if (event.kind === 'fbd_tool') {
+    if (!nonempty(event.studentMessage, 20_000) || !nonempty(event.toolName, 128) ||
+      !(event.toolName as string).startsWith('fbd_') ||
+      typeof event.aiResponse !== 'string' || event.aiResponse.length > 30_000 ||
+      typeof event.succeeded !== 'boolean' || event.toolArguments === undefined ||
+      !fbdSnapshot(event.stateBefore) || !fbdSnapshot(event.stateAfter) ||
+      (event.error !== undefined && typeof event.error !== 'string') ||
+      (!event.succeeded && JSON.stringify(event.stateBefore) !== JSON.stringify(event.stateAfter)))
+      throw new Error('Invalid FBD tool event.');
     return event as ResearchEvent;
   }
   if (event.kind !== 'tool' || !nonempty(event.studentMessage, 20_000) ||

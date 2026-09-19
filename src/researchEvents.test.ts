@@ -10,6 +10,24 @@ const toolEvent = {
   aiResponse: 'Moved the load.', succeeded: true,
 };
 
+test('FBD check events retain the student snapshot, comparison, and exact feedback', () => {
+  const fbdState = { version: 1, sourceStructureKey: 'structure-1',
+    selectedTarget: { kind: 'body', id: 'structure' },
+    forces: [{ id: 'force-1', at: { x: 2, y: 0 }, angle: -90, label: 'P' }],
+    moments: [], dimensions: [], angles: [], labels: [] };
+  const comparisonResult = { status: 'needs_revision', selectedTarget: fbdState.selectedTarget,
+    issues: [{ kind: 'missing_force', description: 'Add a support reaction.' }], limitations: [],
+    checked: { appliedForces: 1, appliedMoments: 0, supportForceComponents: 3, supportMoments: 0 } };
+  const event = { kind: 'fbd_check', eventId: 'check-1', sessionId: 'session-1',
+    timestamp: '2026-09-19T12:00:00.000Z', studentMessage: 'Check My FBD',
+    fbdState, comparisonResult, feedback: 'Review the support reaction.' };
+  assert.deepEqual(validateResearchEvent(event), event);
+  assert.throws(() => validateResearchEvent({ ...event, fbdState: null }), /Invalid FBD check/);
+  assert.throws(() => validateResearchEvent({ ...event, comparisonResult: { ...comparisonResult,
+    checked: { ...comparisonResult.checked, appliedForces: -1 } } }), /Invalid FBD check/);
+  assert.throws(() => validateResearchEvent({ ...event, feedback: '' }), /Invalid FBD check/);
+});
+
 test('FBD chat edits require before and after snapshots; failed attempts preserve state', () => {
   const empty = { version: 1, sourceStructureKey: 'structure-1', selectedTarget: { kind: 'body', id: 'structure' },
     forces: [], moments: [], dimensions: [], angles: [], labels: [] };

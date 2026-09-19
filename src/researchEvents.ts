@@ -6,12 +6,15 @@ export type ResearchEvent = {
   studentMessage: string; toolName: string; toolArguments: unknown;
   stateBefore: unknown; stateAfter: unknown; solverResult?: unknown;
   aiResponse: string; succeeded: boolean; error?: string;
-} | {
-  kind: 'fbd_tool'; eventId: string; sessionId: string; timestamp: string;
+  } | {
+    kind: 'fbd_tool'; eventId: string; sessionId: string; timestamp: string;
   studentMessage: string; toolName: string; toolArguments: unknown;
   stateBefore: unknown; stateAfter: unknown;
-  aiResponse: string; succeeded: boolean; error?: string;
-} | {
+    aiResponse: string; succeeded: boolean; error?: string;
+  } | {
+    kind: 'fbd_check'; eventId: string; sessionId: string; timestamp: string;
+    studentMessage: string; fbdState: unknown; comparisonResult: unknown; feedback: string;
+  } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
     `fbd_given_${'loads' | 'dimensions' | 'angles' | 'labels'}_${'on' | 'off'}` |
@@ -101,6 +104,33 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 300_000 || !nonempty(event.eventId, 128) ||
     !nonempty(event.sessionId, 128) || !nonempty(event.timestamp, 40) ||
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
+  if (event.kind === 'fbd_check') {
+    const comparison = event.comparisonResult as Record<string, unknown> | undefined;
+    const checked = comparison?.checked as Record<string, unknown> | undefined;
+    const issues = comparison?.issues;
+    const limitations = comparison?.limitations;
+    const kinds = ['missing_force', 'extra_force', 'incorrect_force_direction', 'missing_moment',
+      'extra_moment', 'incorrect_moment_direction', 'incorrect_support_reaction',
+      'omitted_applied_load', 'incorrect_given_magnitude', 'select_target', 'stale_structure'];
+    if (!nonempty(event.studentMessage, 20_000) || !fbdSnapshot(event.fbdState) ||
+      typeof event.feedback !== 'string' || !nonempty(event.feedback, 30_000) ||
+      !comparison || typeof comparison !== 'object' || Array.isArray(comparison) ||
+      !['no_discrepancies', 'needs_revision', 'limited'].includes(comparison.status as string) ||
+      JSON.stringify(comparison.selectedTarget) !== JSON.stringify((event.fbdState as Record<string, unknown>).selectedTarget) ||
+      !Array.isArray(issues) || issues.length > 100 || !issues.every((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+        const issue = item as Record<string, unknown>;
+        return kinds.includes(issue.kind as string) && nonempty(issue.description, 500) &&
+          (issue.elementId === undefined || nonempty(issue.elementId, 128)) &&
+          (issue.sourceId === undefined || nonempty(issue.sourceId, 128));
+      }) || !Array.isArray(limitations) || limitations.length > 50 ||
+      !limitations.every((item) => nonempty(item, 500)) ||
+      !checked || typeof checked !== 'object' || Array.isArray(checked) ||
+      !['appliedForces', 'appliedMoments', 'supportForceComponents', 'supportMoments'].every((key) =>
+        Number.isSafeInteger(checked[key]) && (checked[key] as number) >= 0))
+      throw new Error('Invalid FBD check event.');
+    return event as ResearchEvent;
+  }
   if (event.kind === 'visualization') {
     if (!['front', 'top', 'right', 'isometric', 'reset', 'free', 'orbit', 'fbd',
       ...['loads', 'dimensions', 'angles', 'labels'].flatMap((key) =>

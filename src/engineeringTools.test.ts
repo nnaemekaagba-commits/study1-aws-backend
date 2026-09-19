@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineeringTools, engineeringToolNames, openAiToolDefinitions,
-  googleToolDefinitions, claudeToolDefinitions, requiresEngineeringTool, requiresFBDTool,
-  fbdMutationToolNames, validateRequestedToolCalls } from './engineeringTools.js';
+  googleToolDefinitions, claudeToolDefinitions, requiresEngineeringTool, requiresFBDTool, requiresCalculationTool,
+  fbdMutationToolNames, filterUnrequestedCalculationCalls, validateRequestedToolCalls } from './engineeringTools.js';
 
 test('all engineering tools are declared for each provider', () => {
   assert.equal(engineeringTools.length, 24);
@@ -22,6 +22,24 @@ test('FBD advice does not request a mutation tool', () => {
   assert.equal(requiresFBDTool('Move my FBD force label.'), true);
   assert.equal(validateRequestedToolCalls([{ id: 'one', name: 'fbd_add_force',
     arguments: '{"x":2,"y":0,"angle":-90,"label":"P"}' }]).length, 1);
+});
+
+test('only explicit reaction requests require the deterministic calculation tool', () => {
+  for (const message of ['Calculate the support reactions.', 'What are the reactions?',
+    'Show the reaction arrows on the diagram.']) assert.equal(requiresCalculationTool(message), true);
+  for (const message of ['Move the load to 3 m.', 'Build my FBD.', 'Show FBD view.',
+    'How do I calculate reactions?', 'Do not calculate reactions yet.'])
+    assert.equal(requiresCalculationTool(message), false);
+});
+
+test('backend filters model-requested calculations from FBD, edit, and view requests', () => {
+  const calls = [
+    { id: 'move', name: 'move_load', arguments: { loadId: 'load-C', position: 3 } },
+    { id: 'solve', name: 'calculate_reactions', arguments: {} },
+  ];
+  for (const message of ['Move the load to 3 m.', 'Build my FBD.', 'Show Split View.'])
+    assert.deepEqual(filterUnrequestedCalculationCalls(calls, message), [calls[0]]);
+  assert.deepEqual(filterUnrequestedCalculationCalls(calls, 'Move the load and calculate reactions.'), calls);
 });
 
 test('clear structural edit requests require a function call', () => {

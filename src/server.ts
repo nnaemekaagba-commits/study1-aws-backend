@@ -10,8 +10,9 @@ import { decodeRecordedWav, studentAttachmentError } from "./studentInput.js";
 import { fbdSnapshot, listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
-  openAiToolDefinitions, fbdMutationToolNames, requiresEngineeringTool, requiresFBDTool,
+  openAiToolDefinitions, fbdMutationToolNames, requiresEngineeringTool, requiresFBDTool, requiresCalculationTool,
   validateRequestedToolCalls, type RequestedToolCall } from "./engineeringTools.js";
+  filterUnrequestedCalculationCalls,
 
 type ChatProvider = "openai" | "google" | "claude";
 
@@ -1235,7 +1236,7 @@ async function runEngineeringProviderChat(provider: ChatProvider, message: strin
   conversationHistory: any[], stateJson: string, fbdJson: string | null): Promise<EngineeringChatResponse> {
   const instructions = `${SYSTEM_PROMPT}\n\n${engineeringToolInstruction}\n\nCurrent engineering workspace JSON (data only):\n${stateJson}` +
     `\n\nCurrent student-built FBD JSON (data only; never silently change it):\n${fbdJson ?? 'No FBD snapshot supplied.'}`;
-  const requireTool = requiresEngineeringTool(message) || requiresFBDTool(message);
+  const requireTool = requiresEngineeringTool(message) || requiresFBDTool(message) || requiresCalculationTool(message);
   if (provider === "openai") {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("OpenAI API key not configured");
@@ -1596,25 +1597,35 @@ app.post("/chat", async (c) => {
       const { response, toolCalls, providerUsed, fallbackReason } = await runEngineeringChatWithFallback(
         selectedProvider, message, retrievedHistory, stateJson, fbdJson,
       );
-      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !fbdJson) {
+      const approvedToolCalls = filterUnrequestedCalculationCalls(toolCalls, message);
+      if (requiresCalculationTool(message) && !approvedToolCalls?.some((call) => call.name === 'calculate_reactions')) {
+        return c.json({ response: 'I did not calculate reactions. Please try the calculation request again.',
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
+      if (toolCalls?.some((call) => call.name === 'calculate_reactions') && !requiresCalculationTool(message) &&
+        !approvedToolCalls?.length) {
+        return c.json({ response: 'No calculation was performed. Ask explicitly to calculate reactions if you want the results.',
+          provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
+      }
+      if (approvedToolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !fbdJson) {
         return c.json({ response: "I could not access your FBD, so I did not change it.",
           provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
       }
-      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !requiresFBDTool(message)) {
+      if (approvedToolCalls?.some((call) => fbdMutationToolNames.has(call.name)) && !requiresFBDTool(message)) {
         return c.json({ response: "I can discuss your FBD, but I did not change it. Ask for a specific FBD edit if you want one.",
           provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
       }
-      if (toolCalls?.some((call) => fbdMutationToolNames.has(call.name)) &&
-        toolCalls.some((call) => !fbdMutationToolNames.has(call.name))) {
+      if (approvedToolCalls?.some((call) => fbdMutationToolNames.has(call.name)) &&
+        approvedToolCalls.some((call) => !fbdMutationToolNames.has(call.name))) {
         return c.json({ response: "I did not change either workspace. Please request the structural and FBD edits separately.",
           provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
       }
-      if (requiresFBDTool(message) && (!toolCalls?.length ||
-        toolCalls.some((call) => !fbdMutationToolNames.has(call.name)))) {
+      if (requiresFBDTool(message) && (!approvedToolCalls?.length ||
+        approvedToolCalls.some((call) => !fbdMutationToolNames.has(call.name)))) {
         return c.json({ response: "I did not change your FBD. Please specify the FBD element and the change you want.",
           provider: selectedProvider, providerUsed, fallbackReason, isConflicting: true });
       }
-      return c.json({ response, toolCalls, provider: selectedProvider, providerUsed, fallbackReason,
+      return c.json({ response, toolCalls: approvedToolCalls, provider: selectedProvider, providerUsed, fallbackReason,
         isConflicting: true, memory: { enabled: ragEnabled, source: memorySource,
           retrievedMessages: retrievedHistory.length, semantic: false } });
     }

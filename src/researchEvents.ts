@@ -1,19 +1,30 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 
+type FBDResearchContext = {
+  problemId: string; isolatedObject: { kind: 'body' | 'member' | 'joint'; id: string } | null;
+  actionType: string; elementType: 'force' | 'moment' | 'dimension' | 'angle' | 'label' | null;
+  elementId: string | null; stateBefore: unknown; stateAfter: unknown;
+  inputModality: 'text' | 'audio' | null; relatedStudentChatMessage: string | null;
+  sequence: number;
+};
+
 export type ResearchEvent = {
   kind: 'tool'; eventId: string; sessionId: string; timestamp: string;
   studentMessage: string; toolName: string; toolArguments: unknown;
   stateBefore: unknown; stateAfter: unknown; solverResult?: unknown;
   aiResponse: string; succeeded: boolean; error?: string;
+  fbdResearch?: FBDResearchContext;
   } | {
-    kind: 'fbd_tool'; eventId: string; sessionId: string; timestamp: string;
+  kind: 'fbd_tool'; eventId: string; sessionId: string; timestamp: string;
   studentMessage: string; toolName: string; toolArguments: unknown;
   stateBefore: unknown; stateAfter: unknown;
     aiResponse: string; succeeded: boolean; error?: string;
+    fbdResearch?: FBDResearchContext;
   } | {
     kind: 'fbd_check'; eventId: string; sessionId: string; timestamp: string;
     studentMessage: string; fbdState: unknown; comparisonResult: unknown; feedback: string;
+    fbdResearch?: FBDResearchContext;
   } | {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
@@ -34,6 +45,7 @@ export type ResearchEvent = {
   dragTarget?: 'label' | 'application';
   fbdBefore?: Record<string, unknown>;
   fbdAfter?: Record<string, unknown>;
+  fbdResearch?: FBDResearchContext;
 };
 
 const nonempty = (value: unknown, max: number) =>
@@ -97,6 +109,31 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
   return false;
 }
 
+const fbdActions = new Set([
+  'enter_fbd_mode', 'exit_fbd_mode', 'select_body', 'undo', 'redo', 'reset_fbd',
+  'request_ai_help', 'request_fbd_check', 'view_change', 'show_given_information',
+  ...['force', 'moment', 'dimension', 'angle', 'label'].flatMap((kind) =>
+    [`add_${kind}`, `edit_${kind}`, `move_${kind}`, `delete_${kind}`]),
+]);
+function validateFBDResearchContext(value: unknown): FBDResearchContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Invalid FBD research context.');
+  const row = value as Record<string, unknown>;
+  const after = row.stateAfter as Record<string, unknown> | undefined;
+  if (!fbdSnapshot(row.stateBefore) || !fbdSnapshot(after) ||
+    !nonempty(row.problemId, 128) || row.problemId !== after?.sourceStructureKey ||
+    JSON.stringify(row.isolatedObject) !== JSON.stringify(after?.selectedTarget) ||
+    !fbdActions.has(row.actionType as string) ||
+    !(row.elementType === null || ['force', 'moment', 'dimension', 'angle', 'label'].includes(row.elementType as string)) ||
+    !(row.elementId === null || nonempty(row.elementId, 128)) ||
+    (row.elementType === null && row.elementId !== null) ||
+    !(row.inputModality === null || row.inputModality === 'text' || row.inputModality === 'audio') ||
+    !(row.relatedStudentChatMessage === null || nonempty(row.relatedStudentChatMessage, 20_000)) ||
+    !Number.isSafeInteger(row.sequence) || (row.sequence as number) < 1)
+    throw new Error('Invalid FBD research context.');
+  return row as FBDResearchContext;
+}
+
 export function validateResearchEvent(input: unknown): ResearchEvent {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid research event.');
   const event = input as Record<string, unknown>;
@@ -104,6 +141,21 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 300_000 || !nonempty(event.eventId, 128) ||
     !nonempty(event.sessionId, 128) || !nonempty(event.timestamp, 40) ||
     Number.isNaN(Date.parse(event.timestamp as string))) throw new Error('Invalid research event metadata.');
+  if (event.fbdResearch !== undefined) {
+    const context = validateFBDResearchContext(event.fbdResearch);
+    if (event.kind === 'fbd_tool' &&
+      (JSON.stringify(context.stateBefore) !== JSON.stringify(event.stateBefore) ||
+        JSON.stringify(context.stateAfter) !== JSON.stringify(event.stateAfter)))
+      throw new Error('FBD tool research state mismatch.');
+    if (event.kind === 'fbd_check' &&
+      (context.actionType !== 'request_fbd_check' ||
+        JSON.stringify(context.stateAfter) !== JSON.stringify(event.fbdState)))
+      throw new Error('FBD check research state mismatch.');
+    if (event.kind === 'visualization' && event.fbdBefore !== undefined &&
+      (JSON.stringify(context.stateBefore) !== JSON.stringify(event.fbdBefore) ||
+        JSON.stringify(context.stateAfter) !== JSON.stringify(event.fbdAfter)))
+      throw new Error('FBD visualization research state mismatch.');
+  }
   if (event.kind === 'fbd_check') {
     const comparison = event.comparisonResult as Record<string, unknown> | undefined;
     const checked = comparison?.checked as Record<string, unknown> | undefined;
@@ -283,7 +335,8 @@ export async function saveResearchEvent(userId: string, event: ResearchEvent): P
   const validated = validateResearchEvent(event);
   if (client && tableName) {
     await client.send(new PutCommand({ TableName: tableName, Item: {
-      pk: `USER#${userId}`, sk: `ENGINEERING_EVENT#${validated.timestamp}#${validated.eventId}`,
+      pk: `USER#${userId}`, sk: `ENGINEERING_EVENT#${validated.timestamp}#${validated.fbdResearch
+        ? String(validated.fbdResearch.sequence).padStart(12, '0') + '#' : ''}${validated.eventId}`,
       event: validated, timestamp: validated.timestamp,
     } }));
   } else {
@@ -301,5 +354,8 @@ export async function listResearchEvents(userId: string): Promise<ResearchEvent[
     }));
     return (response.Items || []).map((item) => item.event as ResearchEvent).filter(Boolean);
   }
-  return [...(memory.get(userId) || [])].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return [...(memory.get(userId) || [])].sort((a, b) =>
+    a.timestamp.localeCompare(b.timestamp) ||
+    ((a.fbdResearch?.sequence || 0) - (b.fbdResearch?.sequence || 0)) ||
+    a.eventId.localeCompare(b.eventId));
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { listResearchEvents, saveResearchEvent, validateResearchEvent } from './researchEvents.js';
+import { listResearchEvents, saveResearchEvent, validateResearchEvent,
+  type ResearchEvent } from './researchEvents.js';
 
 const state = { nodes: [], members: [], supports: [], loads: [], dimensions: [], units: { length: 'm', force: 'kN' } };
 const toolEvent = {
@@ -9,6 +10,34 @@ const toolEvent = {
   stateBefore: state, stateAfter: state, solverResult: { reactions: [] },
   aiResponse: 'Moved the load.', succeeded: true,
 };
+
+test('FBD construction records validate complete context and retain sequence order', async () => {
+  const before = { version: 1, sourceStructureKey: 'problem-1',
+    selectedTarget: { kind: 'member' as const, id: 'AB' }, forces: [], moments: [],
+    dimensions: [], angles: [], labels: [] };
+  const force = { id: 'force-1', at: { x: 1, y: 0 }, angle: -90, label: 'P' };
+  const after = { ...before, forces: [force] };
+  const context = { problemId: 'problem-1', isolatedObject: before.selectedTarget,
+    actionType: 'add_force', elementType: 'force', elementId: 'force-1',
+    stateBefore: before, stateAfter: after, inputModality: 'audio',
+    relatedStudentChatMessage: 'Add a downward force', sequence: 2 } satisfies
+      NonNullable<Extract<ResearchEvent, { kind: 'fbd_tool' }>['fbdResearch']>;
+  const event = { kind: 'fbd_tool', eventId: 'ordered-2', sessionId: 'ordered-session',
+    timestamp: '2026-09-20T12:00:00.000Z', studentMessage: 'Add a downward force',
+    toolName: 'fbd_add_force', toolArguments: { x: 1, y: 0, angle: -90, label: 'P' },
+    stateBefore: before, stateAfter: after, aiResponse: 'Added.', succeeded: true,
+    fbdResearch: context } satisfies ResearchEvent;
+  assert.deepEqual(validateResearchEvent(event), event);
+  assert.throws(() => validateResearchEvent({ ...event,
+    fbdResearch: { ...context, problemId: 'different' } }), /research context/);
+  assert.throws(() => validateResearchEvent({ ...event,
+    fbdResearch: { ...context, stateAfter: before } }), /research state mismatch/);
+  const first = { ...event, eventId: 'ordered-1', fbdResearch: { ...context, sequence: 1 } };
+  await saveResearchEvent('ordered-user', event);
+  await saveResearchEvent('ordered-user', first);
+  const listed = await listResearchEvents('ordered-user');
+  assert.deepEqual(listed.map((item) => item.eventId), ['ordered-1', 'ordered-2']);
+});
 
 test('FBD check events retain the student snapshot, comparison, and exact feedback', () => {
   const fbdState = { version: 1, sourceStructureKey: 'structure-1',

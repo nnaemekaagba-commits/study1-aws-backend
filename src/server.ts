@@ -8,6 +8,7 @@ import { PDFParse } from "pdf-parse";
 import { messageStore, type StoredMessage, type StoredUser } from "./store.js";
 import { decodeRecordedWav, studentAttachmentError } from "./studentInput.js";
 import { fbdSnapshot, listResearchEvents, saveResearchEvent, validateResearchEvent } from "./researchEvents.js";
+import { isResearcherUserId, validReplayStudentId } from "./researcherAccess.js";
 import { retrieveRelevantHistory, type RagMessage } from "./rag.js";
 import { claudeToolDefinitions, engineeringToolInstruction, googleToolDefinitions,
   openAiToolDefinitions, fbdMutationToolNames, requiresEngineeringTool, requiresFBDTool, requiresCalculationTool,
@@ -1478,6 +1479,38 @@ app.get("/engineering-events", async (c) => {
   if (!user) return c.json({ error: "Unauthorized" }, 401);
   try { return c.json({ events: await listResearchEvents(user.sub) }); }
   catch (error) { console.error("Research event retrieval failed:", error); return c.json({ error: "Research event retrieval failed" }, 500); }
+});
+
+app.get("/researcher/me", (c) => {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = token ? verifyToken(token) : null;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!isResearcherUserId(user.sub)) return c.json({ error: "Researcher access required" }, 403);
+  return c.json({ allowed: true, researcherId: user.sub });
+});
+
+/** Read-only access to one student's recorded FBD session history. */
+app.get("/researcher/fbd-events/:studentId", async (c) => {
+  const authorization = c.req.header("Authorization");
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const user = token ? verifyToken(token) : null;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  if (!isResearcherUserId(user.sub)) return c.json({ error: "Researcher access required" }, 403);
+  const studentId = c.req.param("studentId");
+  if (!validReplayStudentId(studentId)) return c.json({ error: "Invalid student ID" }, 400);
+  try {
+    const records = await listResearchEvents(studentId);
+    const events = records.filter((event) =>
+      event.kind !== 'tool' && (event.fbdResearch || event.kind === 'fbd_tool' ||
+        event.kind === 'fbd_check' || (event.kind === 'visualization' &&
+          event.fbdBefore && event.fbdAfter)));
+    const structureEvents = records.filter((event) => event.kind === 'tool');
+    return c.json({ events, structureEvents });
+  } catch (error) {
+    console.error('Researcher FBD replay retrieval failed:', error);
+    return c.json({ error: 'Could not load FBD replay' }, 500);
+  }
 });
 
 app.post("/transcribe", async (c) => {

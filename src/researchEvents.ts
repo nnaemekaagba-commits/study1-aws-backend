@@ -348,11 +348,18 @@ export async function saveResearchEvent(userId: string, event: ResearchEvent): P
 export async function listResearchEvents(userId: string): Promise<ResearchEvent[]> {
   if (!nonempty(userId, 128)) throw new Error('Invalid research user.');
   if (client && tableName) {
-    const response = await client.send(new QueryCommand({ TableName: tableName,
-      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
-      ExpressionAttributeValues: { ':pk': `USER#${userId}`, ':prefix': 'ENGINEERING_EVENT#' },
-    }));
-    return (response.Items || []).map((item) => item.event as ResearchEvent).filter(Boolean);
+    const events: ResearchEvent[] = [];
+    let cursor: Record<string, unknown> | undefined;
+    do {
+      const response = await client.send(new QueryCommand({ TableName: tableName,
+        KeyConditionExpression: 'pk = :pk AND begins_with(sk, :prefix)',
+        ExpressionAttributeValues: { ':pk': `USER#${userId}`, ':prefix': 'ENGINEERING_EVENT#' },
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }));
+      events.push(...(response.Items || []).map((item) => item.event as ResearchEvent).filter(Boolean));
+      cursor = response.LastEvaluatedKey;
+    } while (cursor);
+    return events;
   }
   return [...(memory.get(userId) || [])].sort((a, b) =>
     a.timestamp.localeCompare(b.timestamp) ||

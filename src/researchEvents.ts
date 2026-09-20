@@ -91,6 +91,7 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
     typeof row.height === 'number' && Number.isFinite(row.height) && row.height > 0 &&
     (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
   if (kind === 'joint') return fbdPoint(row.at) &&
+    (row.kind === undefined || ['free', 'pin', 'roller', 'fixed'].includes(row.kind as string)) &&
     (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
   if (kind === 'member') return fbdPoint(row.start) && fbdPoint(row.end) &&
     Math.hypot((row.end as { x: number; y: number }).x - (row.start as { x: number; y: number }).x,

@@ -71,6 +71,25 @@ test('FBD chat edits require before and after snapshots; failed attempts preserv
   assert.throws(() => validateResearchEvent({ ...event, stateBefore: null }), /Invalid FBD tool/);
 });
 
+test('blank canvas and student-created base geometry events retain ordered FBD snapshots', () => {
+  const empty = { version: 1, sourceStructureKey: 'problem-1', selectedTarget: null,
+    bodies: [], joints: [], members: [], forces: [], moments: [], dimensions: [], angles: [], labels: [] };
+  const after = { ...empty, bodies: [{ id: 'body-1', origin: { x: 0, y: 0 },
+    width: 4, height: 1, label: 'My body' }] };
+  const metadata = { kind: 'visualization', eventId: 'base-1', sessionId: 'session-1',
+    timestamp: '2026-09-20T12:00:00.000Z' };
+  const context = { problemId: 'problem-1', isolatedObject: null, actionType: 'add_body',
+    elementType: 'body', elementId: 'body-1', stateBefore: empty, stateAfter: after,
+    inputModality: null, relatedStudentChatMessage: null, sequence: 2 };
+  assert.equal(validateResearchEvent({ ...metadata, action: 'fbd_blank_workspace',
+    fbdResearch: { ...context, actionType: 'enter_blank_workspace', elementType: null,
+      elementId: null, stateAfter: empty, sequence: 1 } }).kind, 'visualization');
+  assert.equal(validateResearchEvent({ ...metadata, action: 'fbd_body_add',
+    fbdResearch: context }).kind, 'visualization');
+  assert.throws(() => validateResearchEvent({ ...metadata, action: 'fbd_body_add',
+    fbdResearch: { ...context, elementType: 'unknown' } }), /research context/);
+});
+
 test('research tool events require snapshots, outcome, and session metadata', () => {
   assert.equal(validateResearchEvent(toolEvent).kind, 'tool');
   assert.throws(() => validateResearchEvent({ ...toolEvent, stateAfter: null }), /Invalid engineering tool/);

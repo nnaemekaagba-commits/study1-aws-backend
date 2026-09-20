@@ -3,7 +3,7 @@ import { DynamoDBDocumentClient, PutCommand, QueryCommand } from '@aws-sdk/lib-d
 
 type FBDResearchContext = {
   problemId: string; isolatedObject: { kind: 'body' | 'member' | 'joint'; id: string } | null;
-  actionType: string; elementType: 'force' | 'moment' | 'dimension' | 'angle' | 'label' | null;
+  actionType: string; elementType: 'body' | 'joint' | 'member' | 'force' | 'moment' | 'dimension' | 'angle' | 'label' | null;
   elementId: string | null; stateBefore: unknown; stateAfter: unknown;
   inputModality: 'text' | 'audio' | null; relatedStudentChatMessage: string | null;
   sequence: number;
@@ -29,7 +29,8 @@ export type ResearchEvent = {
   kind: 'visualization'; eventId: string; sessionId: string; timestamp: string;
   action: 'front' | 'top' | 'right' | 'isometric' | 'reset' | 'free' | 'orbit' | 'fbd' |
     `fbd_given_${'loads' | 'dimensions' | 'angles' | 'labels'}_${'on' | 'off'}` |
-    'structure_view' | 'fbd_view' | 'split_view' | 'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move' | 'fbd_element_edit' | 'fbd_element_delete' | 'fbd_element_drag' | 'fbd_element_reposition';
+    'structure_view' | 'fbd_view' | 'split_view' | 'fbd_enter' | 'fbd_exit' | 'fbd_select' | 'fbd_delete' | 'fbd_undo' | 'fbd_redo' | 'fbd_reset' | 'fbd_force_add' | 'fbd_moment_add' | 'fbd_dimension_add' | 'fbd_angle_add' | 'fbd_label_add' | 'fbd_label_move' | 'fbd_element_edit' | 'fbd_element_delete' | 'fbd_element_drag' | 'fbd_element_reposition' | 'fbd_blank_workspace' |
+    `fbd_${'body' | 'joint' | 'member'}_${'add' | 'edit' | 'move' | 'delete'}`;
   target?: { kind: 'body' | 'member' | 'joint'; id: string };
   force?: { id: string; at: { x: number; y: number }; angle: number; label?: string; magnitude?: number };
   moment?: { id: string; at: { x: number; y: number }; clockwise: boolean; label?: string; magnitude?: number };
@@ -38,7 +39,7 @@ export type ResearchEvent = {
     to: { x: number; y: number }; label: string };
   label?: { id: string; at: { x: number; y: number }; text: string;
     associatedWith?: { kind: 'force' | 'moment' | 'node' | 'member' | 'dimension' | 'angle'; id: string } };
-  elementKind?: 'force' | 'moment' | 'dimension' | 'angle' | 'label';
+  elementKind?: 'body' | 'joint' | 'member' | 'force' | 'moment' | 'dimension' | 'angle' | 'label';
   elementId?: string;
   before?: Record<string, unknown>;
   after?: Record<string, unknown> | null;
@@ -67,7 +68,13 @@ export const fbdSnapshot = (value: unknown) => {
     ['forces', 'moments', 'dimensions', 'angles', 'labels'].every((key) =>
       Array.isArray(state[key]) && (state[key] as unknown[]).every((item) =>
         !!item && typeof item === 'object' && !Array.isArray(item) &&
-        nonempty((item as Record<string, unknown>).id, 128)));
+        nonempty((item as Record<string, unknown>).id, 128))) &&
+    ['bodies', 'joints', 'members'].every((key) => state[key] === undefined ||
+      (Array.isArray(state[key]) && (state[key] as unknown[]).every((item) =>
+        !!item && typeof item === 'object' && !Array.isArray(item) &&
+        nonempty((item as Record<string, unknown>).id, 128) &&
+        validFbdElement(key === 'bodies' ? 'body' : key.slice(0, -1),
+          (item as Record<string, unknown>).id as string, item))));
 };
 const fbdPoint = (value: unknown): value is { x: number; y: number } => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -79,6 +86,16 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   if (row.id !== id) return false;
+  if (kind === 'body') return fbdPoint(row.origin) &&
+    typeof row.width === 'number' && Number.isFinite(row.width) && row.width > 0 &&
+    typeof row.height === 'number' && Number.isFinite(row.height) && row.height > 0 &&
+    (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
+  if (kind === 'joint') return fbdPoint(row.at) &&
+    (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
+  if (kind === 'member') return fbdPoint(row.start) && fbdPoint(row.end) &&
+    Math.hypot((row.end as { x: number; y: number }).x - (row.start as { x: number; y: number }).x,
+      (row.end as { x: number; y: number }).y - (row.start as { x: number; y: number }).y) >= 1e-9 &&
+    (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
   if (row.labelPosition !== undefined && (kind === 'label' || !fbdPoint(row.labelPosition))) return false;
   if (kind === 'force' || kind === 'moment') return fbdPoint(row.at) && nonempty(row.label, 80) &&
     (row.magnitude === undefined || (typeof row.magnitude === 'number' &&
@@ -110,9 +127,9 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
 }
 
 const fbdActions = new Set([
-  'enter_fbd_mode', 'exit_fbd_mode', 'select_body', 'undo', 'redo', 'reset_fbd',
+  'enter_fbd_mode', 'enter_blank_workspace', 'exit_fbd_mode', 'select_body', 'undo', 'redo', 'reset_fbd',
   'request_ai_help', 'request_fbd_check', 'view_change', 'show_given_information',
-  ...['force', 'moment', 'dimension', 'angle', 'label'].flatMap((kind) =>
+  ...['body', 'joint', 'member', 'force', 'moment', 'dimension', 'angle', 'label'].flatMap((kind) =>
     [`add_${kind}`, `edit_${kind}`, `move_${kind}`, `delete_${kind}`]),
 ]);
 function validateFBDResearchContext(value: unknown): FBDResearchContext {
@@ -124,7 +141,7 @@ function validateFBDResearchContext(value: unknown): FBDResearchContext {
     !nonempty(row.problemId, 128) || row.problemId !== after?.sourceStructureKey ||
     JSON.stringify(row.isolatedObject) !== JSON.stringify(after?.selectedTarget) ||
     !fbdActions.has(row.actionType as string) ||
-    !(row.elementType === null || ['force', 'moment', 'dimension', 'angle', 'label'].includes(row.elementType as string)) ||
+    !(row.elementType === null || ['body', 'joint', 'member', 'force', 'moment', 'dimension', 'angle', 'label'].includes(row.elementType as string)) ||
     !(row.elementId === null || nonempty(row.elementId, 128)) ||
     (row.elementType === null && row.elementId !== null) ||
     !(row.inputModality === null || row.inputModality === 'text' || row.inputModality === 'audio') ||
@@ -188,7 +205,8 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
       ...['loads', 'dimensions', 'angles', 'labels'].flatMap((key) =>
         [`fbd_given_${key}_on`, `fbd_given_${key}_off`]),
       'structure_view', 'fbd_view', 'split_view',
-      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move', 'fbd_element_edit', 'fbd_element_delete', 'fbd_element_drag', 'fbd_element_reposition']
+      'fbd_enter', 'fbd_exit', 'fbd_select', 'fbd_delete', 'fbd_undo', 'fbd_redo', 'fbd_reset', 'fbd_force_add', 'fbd_moment_add', 'fbd_dimension_add', 'fbd_angle_add', 'fbd_label_add', 'fbd_label_move', 'fbd_element_edit', 'fbd_element_delete', 'fbd_element_drag', 'fbd_element_reposition', 'fbd_blank_workspace',
+      ...['body', 'joint', 'member'].flatMap((kind) => ['add', 'edit', 'move', 'delete'].map((action) => `fbd_${kind}_${action}`))]
       .includes(event.action as string)) {
       throw new Error('Invalid visualization action.');
     }
@@ -286,8 +304,8 @@ export function validateResearchEvent(input: unknown): ResearchEvent {
         const after = event.fbdAfter as Record<string, unknown>;
         if (before.sourceStructureKey !== after.sourceStructureKey ||
           JSON.stringify(after.selectedTarget) !== JSON.stringify(event.action === 'fbd_select' ? event.target : null) ||
-          ['forces', 'moments', 'dimensions', 'angles', 'labels'].some((key) =>
-            (after[key] as unknown[]).length > 0))
+          ['bodies', 'joints', 'members', 'forces', 'moments', 'dimensions', 'angles', 'labels'].some((key) =>
+            ((after[key] as unknown[] | undefined)?.length || 0) > 0))
           throw new Error('Invalid FBD selection transition.');
       }
       if (event.action === 'fbd_reset') {

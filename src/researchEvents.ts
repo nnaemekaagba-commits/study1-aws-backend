@@ -89,6 +89,7 @@ function validFbdElement(kind: string, id: string, value: unknown): boolean {
   if (kind === 'body') return fbdPoint(row.origin) &&
     typeof row.width === 'number' && Number.isFinite(row.width) && row.width > 0 &&
     typeof row.height === 'number' && Number.isFinite(row.height) && row.height > 0 &&
+    (row.angle === undefined || typeof row.angle === 'number' && Number.isFinite(row.angle)) &&
     (row.label === undefined || typeof row.label === 'string' && row.label.length <= 120);
   if (kind === 'joint') return fbdPoint(row.at) &&
     (row.kind === undefined || ['free', 'pin', 'roller', 'fixed'].includes(row.kind as string)) &&

@@ -3,11 +3,25 @@ export function rejectChatAttachments(files: unknown): boolean {
 }
 
 const ATTACHMENT_KEYS = new Set([
-  'file', 'files', 'attachments', 'attachment', 'attachmentId', 'attachmentIds',
+  'file', 'attachments', 'attachment', 'attachmentId', 'attachmentIds',
   'image', 'images', 'imageUrl', 'imageUrls', 'document', 'documents', 'documentId',
   'documentIds', 'documentUrl', 'documentUrls', 'fileId', 'fileIds', 'fileUrl',
   'fileUrls', 'upload', 'uploads', 'inputFiles',
 ]);
+
+const PASTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+function validPastedImages(files: unknown): boolean {
+  if (!Array.isArray(files) || files.length === 0 || files.length > 4) return false;
+  return files.every((file) => {
+    if (!file || typeof file !== 'object' || Array.isArray(file)) return false;
+    const image = file as Record<string, unknown>;
+    return typeof image.name === 'string' && image.name.length <= 240 &&
+      typeof image.type === 'string' && PASTED_IMAGE_TYPES.has(image.type) &&
+      typeof image.content === 'string' && image.content.length <= 6_000_000 &&
+      image.content.startsWith(`data:${image.type};base64,`);
+  });
+}
 
 function hasInputReference(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -23,9 +37,15 @@ function containsInlineAttachment(text: unknown): boolean {
 }
 
 export function studentAttachmentError(payload: unknown, includeHistory = false,
-  checkContent = true): string | null {
+  checkContent = true, allowPastedImages = false): string | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'Invalid message body';
   const body = payload as Record<string, unknown>;
+  if (body.files !== undefined && !(Array.isArray(body.files) && body.files.length === 0) &&
+      !(allowPastedImages && validPastedImages(body.files))) {
+    return allowPastedImages
+      ? 'Only pasted PNG, JPEG, GIF, or WebP images are supported. Documents and other files are disabled.'
+      : 'Student attachments and document/image inputs are disabled. Use text or voice transcription.';
+  }
   if (hasInputReference(body) || (checkContent && containsInlineAttachment(body.message ?? body.content))) {
     return 'Student attachments and document/image inputs are disabled. Use text or voice transcription.';
   }

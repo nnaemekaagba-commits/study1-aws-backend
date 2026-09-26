@@ -3,10 +3,19 @@ import test from 'node:test';
 
 process.env.NODE_ENV = 'test';
 const { app } = await import('./server.js');
+const { studentAttachmentError } = await import('./studentInput.js');
 
-test('chat route rejects uploaded images and document references before model calls', async () => {
+test('chat validation accepts pasted images only when explicitly enabled', () => {
+  const payload = { message: 'Describe this diagram', files: [
+    { name: 'diagram.png', type: 'image/png', content: 'data:image/png;base64,AAAA' },
+  ] };
+  assert.equal(studentAttachmentError(payload, true, true, true), null);
+  assert.match(studentAttachmentError(payload, true, true, false) || '', /disabled/);
+});
+
+test('chat route rejects documents and unsupported image references before model calls', async () => {
   for (const payload of [
-    { message: 'Describe this', files: [{ type: 'image/png', content: 'data:image/png;base64,AAAA' }] },
+    { message: 'Describe this', files: [{ name: 'notes.pdf', type: 'application/pdf', content: 'data:application/pdf;base64,AAAA' }] },
     { message: 'Read this', documentId: 'document-1' },
     { message: 'Analyze this', imageUrl: 'https://example.test/image.jpg' },
     { message: 'old', conversationHistory: [{ content: 'old', attachments: [{ name: 'paper.pdf' }] }] },
@@ -15,7 +24,7 @@ test('chat route rejects uploaded images and document references before model ca
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /attachments/);
+    assert.match((await response.json()).error, /attachments|pasted|files/i);
   }
 });
 
@@ -27,6 +36,6 @@ test('message route rejects attachment storage even with assistant role', async 
         attachments: [{ name: 'paper.docx' }] }),
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /attachments/);
+    assert.match((await response.json()).error, /attachments|pasted|files/i);
   }
 });

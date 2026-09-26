@@ -1563,7 +1563,7 @@ app.post("/chat", async (c) => {
       provider = "openai",
     } = body;
 
-    const inputError = studentAttachmentError(body, true);
+    const inputError = studentAttachmentError(body, true, true, true);
     if (inputError) {
       return c.json({ error: inputError }, 400);
     }
